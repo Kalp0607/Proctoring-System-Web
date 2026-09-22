@@ -1,84 +1,144 @@
-# Proctoring-System-Web
+# AI-Proctored Online Examination System (Version 2)
 
-Full-featured, production-ready MERN stack web application for an **AI-Proctored Online Examination Platform**.
-
----
-
-## 🌟 Key Features
-
-### 👨‍🏫 Examiner Portal
-- **Test Authoring**: Create exams with both Multiple Choice Questions (MCQ) and Coding Challenges (with public & hidden test cases).
-- **Dynamic Candidate Registration**: Configure custom registration fields (College, Roll No, Branch) and require candidate webcam photo upload.
-- **Passcode & Timing Control**: Strict start time, end time, and registration deadline enforcement with passcodes, direct links, and QR codes.
-- **Candidate Roster Management**: Real-time view of registered students with submitted verification photos and one-click candidate removal.
-- **Proctoring Analytics & Reports**: Live risk categorization (High, Medium, Low Risk), infraction timeline review, 0-marks cheating penalty action, and official PDF report export (PDFKit).
-
-### 🎓 Examinee / Student Portal
-- **Passcode-Protected Registration**: Enter test via passcode or QR code, fill dynamic registration fields, and submit webcam photo before deadline.
-- **Pre-Test Waiting Room (15-Minute Panel)**: Automatic system checks (webcam feed, full-screen readiness, audio) and live countdown to exam start.
-- **Anti-Cheating Enforcement**:
-  - Full-screen lock and focus-loss detection.
-  - **1-Warning Policy**: Immediate warning on 1st tab-switch / minimize; automatic submission with locked answers on 2nd violation.
-- **LeetCode-Style Coding Workspace**:
-  - Split-pane layout with formatted problem descriptions, examples, and execution constraints.
-  - Multi-language support (**JavaScript**, **Python 3**, **C++**, **Java**) with idiomatic boilerplate templates and per-language state memory.
-  - **Run Code**: Execute against sample test cases or custom stdin.
-  - **Submit Code**: Run against **all test cases (including hidden test cases)** with real-time pass/fail breakdown just like LeetCode.
-  - Adjustable screen split presets (`40/60`, `Wide`, `50/50`, `Code Only`), full-screen code editor mode, and collapsible question palette sidebar.
-- **Question Palette & Navigation**: Color-coded tracking for Answered (Green), Visited/Unanswered (Amber), Marked for Review (Purple), Not Visited, and Current Question.
+An enterprise-grade, full-stack online examination platform integrated with a real-time multimodal computer vision and audio AI proctoring engine.
 
 ---
 
-## 🛠️ Technology Stack
+## 🌟 Overview & Key Capabilities
 
-- **Frontend**: React 19, Vite, React Router v7, Lucide Icons, QRCode.react, Vanilla CSS Design System.
-- **Backend**: Node.js, Express.js, MongoDB (Mongoose), JWT, Bcrypt.js, Multer, PDFKit.
-- **Code Execution**: Dual-engine Judge0 API runner with built-in safe local fallback runner for JavaScript, Python, C++, and Java.
+This repository unifies the **MERN Web Examination Platform** (`Web/`) and the **Multimodal AI Proctoring Engine** (`AI/`) into a single, cohesive, production-ready system.
+
+### 1. Multimodal AI Proctoring (`AI/AI-proctoring-system`)
+- **Deep Face Verification**: Uses InsightFace ArcFace (`buffalo_sc`) deep embeddings (512 dimensions) to continuously match the test candidate against their enrolled registration photo.
+- **YOLOv11 Real-Time Object Detection**: Detects cell phones (`PHONE_DETECTED`), books/notes (`BOOK_DETECTED`), and unauthorized persons in frame (`MULTIPLE_PEOPLE`).
+- **3D Head Pose & Gaze Deviation Estimation**: Uses facial landmark geometry and Perspective-n-Point (`solvePnP`) to detect prolonged gaze shifts away from the monitor (`LOOKING_AWAY`).
+- **Speaker Diarization**: 20-second rolling audio analysis with Mel-spectral cepstral feature clustering detecting multiple distinct voices (`MULTIPLE_SPEAKERS`).
+- **Automated Evidence Capture & Telemetry Hook**: Automatically captures annotated violation screenshots and streams alerts in real-time to the Node.js backend.
+
+### 2. Comprehensive Examination Platform (`Web/`)
+- **Interactive MCQ & LeetCode-Style Coding Environment**:
+  - Split-pane layout with question prompt and Monaco code editor.
+  - Interactive "Run Code" execution with custom input/output powered by Judge0.
+  - "Submit Solution" validating hidden test cases, execution time, and auto-grading.
+- **Anti-Cheating Window Enforcement**:
+  - Fullscreen lock with escape detection.
+  - Tab-switch and window-blur tracking with progressive warning modals.
+- **Real-Time AI Proctoring Live HUD**:
+  - Embedded live video stream with AI telemetry overlays.
+  - Status pills displaying face match confidence, gaze direction, audio status, and detected objects.
+- **Examiner Hub & Dynamic Administration**:
+  - Custom test builder supporting MCQ + Coding questions and custom registration forms.
+  - Dynamic shareable test links and SVG QR codes.
+  - Real-time candidate roster with student removal capability.
+  - **Permanent Test Deletion**: Examiners can permanently delete tests along with cascaded removal of registrations, answers, submissions, and proctoring telemetry.
+  - Comprehensive reporting with risk categorization (`High`, `Medium`, `Low`), violation timelines, screenshot evidence review, examiner marks override, and downloadable official PDF reports.
 
 ---
 
-## 🚀 Getting Started
+## 🏗️ Project Architecture
 
-### 1. Prerequisites
-- **Node.js** (v18+)
-- **MongoDB** running locally (`mongodb://127.0.0.1:27017`) or MongoDB Atlas URI
-
-### 2. Backend Setup
-```bash
-cd server
-npm install
-cp .env.example .env
-npm run dev
 ```
-*(Backend runs on `http://127.0.0.1:5000`)*
-
-### 3. Frontend Setup
-```bash
-cd ../client
-npm install
-npm run dev
+AI-Proctoring System Web Part/
+├── run_all.py                 # Unified runner orchestrating all 3 services concurrently
+├── package.json               # Root scripts (e.g. npm start)
+├── .gitignore                 # Root gitignore for unified stack
+│
+├── AI/
+│   └── AI-proctoring-system/  # FastAPI Multimodal AI Proctoring Engine (Port 8000)
+│       ├── proctor_service.py # FastAPI service endpoints & background proctoring worker
+│       ├── config.py          # Thresholds, model weights & backend integration configs
+│       ├── main.py            # Standalone proctoring engine runner
+│       ├── detectors/         # InsightFace, YOLOv11 & Head Pose estimation detectors
+│       ├── audio/             # Live microphone capture & speaker diarization
+│       ├── camera/            # Webcam thread management
+│       ├── violations/        # Violation manager, logger & evidence capture
+│       └── requirements.txt   # Python AI dependencies
+│
+└── Web/
+    ├── client/                # React Vite Frontend (Port 5173)
+    │   ├── src/
+    │   │   ├── pages/         # Examiner Dashboard, Pre-Test Panel, Exam Environment, etc.
+    │   │   ├── components/    # Shared components (Navbar, ProtectedRoute)
+    │   │   └── services/      # Unified REST & AI API service client
+    │   └── package.json
+    │
+    └── server/                # Node.js Express Backend (Port 5000)
+        ├── controllers/       # Test, submission, proctoring & report controllers
+        ├── models/            # MongoDB Mongoose schemas (User, Test, Registration, Submission)
+        ├── routes/            # REST API endpoints
+        ├── services/          # Judge0 code execution & PDFKit report generator
+        └── server.js          # Express entrypoint
 ```
-*(Frontend runs on `http://localhost:5173`)*
 
 ---
 
-## 🔒 Environment Configuration
+## 🚀 Quick Start Guide
 
-Create a `.env` file in `server/` using `.env.example`:
+### Prerequisites
+- **Node.js**: v18+ and `npm`
+- **Python**: v3.10 - v3.13
+- **MongoDB**: Local instance running on `mongodb://localhost:27017` or MongoDB Atlas URI
 
+### 1. Installation
+
+Install Node.js dependencies:
+```bash
+# Install root dependencies
+npm install
+
+# Install Web server dependencies
+cd Web/server && npm install
+
+# Install Web client dependencies
+cd ../client && npm install
+```
+
+Install Python AI dependencies:
+```bash
+cd AI/AI-proctoring-system
+pip install -r requirements.txt
+```
+
+### 2. Configure Environment Variables
+
+Create `Web/server/.env` (see `Web/server/.env.example`):
 ```env
 PORT=5000
-MONGO_URI=mongodb://127.0.0.1:27017/ai_proctor_db
-JWT_SECRET=your_jwt_secret_key_here
-CLIENT_URL=http://localhost:5173
-
-# Optional: Judge0 Remote API (leave blank to use local fallback execution)
-JUDGE0_API_URL=
-JUDGE0_API_KEY=
-JUDGE0_API_HOST=judge0-ce.p.rapidapi.com
+MONGO_URI=mongodb://localhost:27017/ai-proctoring
+JWT_SECRET=ai_proctor_jwt_super_secret_key_2026
+JUDGE0_API_URL=https://judge0-ce.p.rapidapi.com
+JUDGE0_API_KEY=your_optional_judge0_api_key
 ```
+
+### 3. Run All Services Concurrently
+
+From the root directory:
+```bash
+npm start
+```
+*(Or directly: `python run_all.py`)*
+
+This launches:
+- **Node.js Express Backend**: `http://localhost:5000`
+- **React Vite Frontend**: `http://localhost:5173`
+- **FastAPI AI Proctoring Engine**: `http://localhost:8000`
 
 ---
 
-## 📜 License
-ISC License
+## 🧪 Testing & Verification
+
+The repository includes complete test suites covering unit, API integration, and headless browser production workflows:
+
+- **Full End-to-End System Audit**:
+  ```bash
+  cd Web/server && node test_full_suite.js
+  ```
+- **Real Chrome Browser Production Flow**:
+  ```bash
+  cd Web/server && node test_live_production.js
+  ```
+
+---
+
+## 📄 License
+MIT License.

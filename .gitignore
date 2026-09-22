@@ -1,6 +1,12 @@
+# ==========================================
+# AI-Proctored Online Examination System
+# Unified Root .gitignore
+# ==========================================
+
 # Dependencies
 node_modules/
 */node_modules/
+*/*/node_modules/
 package-lock.json
 
 # Environment Variables
@@ -9,24 +15,60 @@ package-lock.json
 *.env
 !.env.example
 
-# Build outputs
+# Build Outputs
 dist/
 */dist/
+*/*/dist/
 build/
+*/build/
 
-# Uploaded candidate photos during exams
-server/uploads/*
-!server/uploads/.gitkeep
+# Uploaded Candidate Photos & Evidence (DO NOT COMMIT)
+Web/server/uploads/*
+!Web/server/uploads/.gitkeep
+AI/AI-proctoring-system/violations/screenshots/*
+!AI/AI-proctoring-system/violations/screenshots/.gitkeep
+AI/AI-proctoring-system/data/reference/*
+!AI/AI-proctoring-system/data/reference/.gitkeep
 
-# Logs
-logs
+# Python Cache & Bytecode
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Model Weights (downloaded automatically if absent)
+*.pt
+*.onnx
+*.engine
+models/*.pt
+models/*.onnx
+
+# Logs & Temporary Files
 *.log
+logs/
+*/logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+violations/*.tmp
+violations/*.log
+tests/tmp/
 
-# IDE & OS
+# OS & IDE Files
 .DS_Store
 Thumbs.db
-.vscode/
+desktop.ini
 .idea/
+.vscode/
+*.swp
+*.swo

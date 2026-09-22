@@ -1,0 +1,22 @@
+{
+  "name": "ai-proctoring-system-full",
+  "version": "1.0.0",
+  "description": "Unified AI-Proctored Online Examination & Evaluation Platform",
+  "scripts": {
+    "start": "python run_all.py",
+    "dev:all": "python run_all.py",
+    "server": "npm --prefix Web/server run dev",
+    "client": "npm --prefix Web/client run dev",
+    "ai": "python -m uvicorn proctor_service:app --app-dir AI/AI-proctoring-system --port 8000"
+  },
+  "keywords": [
+    "ai-proctoring",
+    "examination",
+    "face-verification",
+    "yolo11",
+    "speaker-diarization",
+    "mern"
+  ],
+  "author": "",
+  "license": "ISC"
+}

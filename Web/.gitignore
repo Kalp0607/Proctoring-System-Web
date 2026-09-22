@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+*/node_modules/
+package-lock.json
+
+# Environment Variables
+.env
+.env.*
+*.env
+!.env.example
+
+# Build outputs
+dist/
+*/dist/
+build/
+
+# Uploaded candidate photos during exams
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE & OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

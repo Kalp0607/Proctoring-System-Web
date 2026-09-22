@@ -1,0 +1,132 @@
+"""
+AI Online Examination & Multimodal AI Proctoring System
+Unified Full-Stack Runner (Node Backend + Vite Client + FastAPI AI Proctoring Engine)
+"""
+
+import os
+import sys
+import time
+import signal
+import subprocess
+import threading
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent
+SERVER_DIR = ROOT_DIR / "Web" / "server"
+CLIENT_DIR = ROOT_DIR / "Web" / "client"
+AI_DIR = ROOT_DIR / "AI" / "AI-proctoring-system"
+
+# ANSI Colors for terminal output
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+MAGENTA = "\033[95m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+processes = []
+shutting_down = False
+
+
+def log_stream(proc, prefix, color):
+    """Streams stdout/stderr lines with service prefix."""
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            if shutting_down:
+                break
+            text = line.rstrip()
+            if text:
+                print(f"{color}{BOLD}[{prefix}]{RESET} {text}")
+    except Exception:
+        pass
+
+
+def start_service(cmd, cwd, prefix, color):
+    """Starts a subprocess and spawns a thread to stream its logs."""
+    is_windows = sys.platform.startswith("win")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        shell=is_windows,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1
+    )
+    processes.append((prefix, proc))
+    t = threading.Thread(target=log_stream, args=(proc, prefix, color), daemon=True)
+    t.start()
+    return proc
+
+
+def shutdown_all(signum=None, frame=None):
+    global shutting_down
+    if shutting_down:
+        return
+    shutting_down = True
+    print(f"\n{YELLOW}{BOLD}>>> Shutting down all AI-Proctoring services...{RESET}")
+
+    for prefix, proc in processes:
+        try:
+            print(f"Stopping {prefix} (PID {proc.pid})...")
+            if sys.platform.startswith("win"):
+                subprocess.run(f"taskkill /F /T /PID {proc.pid}", shell=True, capture_output=True)
+            else:
+                proc.terminate()
+        except Exception as e:
+            pass
+
+    print(f"{GREEN}{BOLD}All services stopped cleanly. Goodbye!{RESET}")
+    sys.exit(0)
+
+
+def main():
+    signal.signal(signal.SIGINT, shutdown_all)
+    signal.signal(signal.SIGTERM, shutdown_all)
+
+    print(f"""
+======================================================================
+     AI-PROCTORED ONLINE EXAMINATION SYSTEM - FULL APPLICATION
+  MERN Web Platform + Multimodal Computer Vision & Audio AI Engine
+======================================================================
+  * Node Express Backend  : http://localhost:5000
+  * Vite React Frontend   : http://localhost:5173
+  * FastAPI AI Proctoring : http://localhost:8000
+======================================================================
+""")
+
+    # 1. Start Node.js Backend Server
+    print(">>> Launching Backend Server on port 5000...")
+    start_service(["npm", "run", "dev"], SERVER_DIR, "SERVER", CYAN)
+    time.sleep(2)
+
+    # 2. Start FastAPI AI Proctoring Service
+    print(">>> Launching Multimodal AI Proctoring Service on port 8000...")
+    ai_cmd = [sys.executable, "-m", "uvicorn", "proctor_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    start_service(ai_cmd, AI_DIR, "AI-ENGINE", MAGENTA)
+    time.sleep(2)
+
+    # 3. Start Vite React Frontend
+    print(">>> Launching React Frontend on port 5173...")
+    start_service(["npm", "run", "dev"], CLIENT_DIR, "FRONTEND", GREEN)
+
+    print("\n[OK] All 3 services are running!")
+    print("Open your browser at: http://localhost:5173")
+    print("Press Ctrl+C at any time to cleanly stop all services.\n")
+
+    try:
+        while True:
+            time.sleep(1)
+            # Check if any process terminated unexpectedly
+            for prefix, proc in processes:
+                if proc.poll() is not None and not shutting_down:
+                    print(f"{RED}{BOLD}Notice: {prefix} exited with code {proc.returncode}{RESET}")
+    except KeyboardInterrupt:
+        shutdown_all()
+
+
+if __name__ == "__main__":
+    main()

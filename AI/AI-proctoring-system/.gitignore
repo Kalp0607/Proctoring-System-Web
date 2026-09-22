@@ -1,0 +1,57 @@
+# ==========================================
+# AI Exam Proctoring System — Git Ignore
+# ==========================================
+
+# --- Violation Screenshots & Evidence (DO NOT PUSH) ---
+violations/screenshots/*
+!violations/screenshots/.gitkeep
+
+# --- Violation JSON Logs & Temporary Files ---
+violations/violations.json
+violations/*.tmp
+violations/*.log
+
+# --- Student Enrollment & Reference Images ---
+data/reference/*
+!data/reference/.gitkeep
+
+# --- Deep Learning Model Weights ---
+*.pt
+*.onnx
+models/*.pt
+models/*.onnx
+models/*.engine
+
+# --- Python Cache & Bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Virtual Environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Temporary Test Files & Artifacts ---
+tests/tmp/
+*.tmp
+*.log
+
+# --- OS & IDE Files ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Debug & Testing Artifacts ---
+debug_*.py
+test_*.py
+benchmark_*.py
+debug_*.jpg
