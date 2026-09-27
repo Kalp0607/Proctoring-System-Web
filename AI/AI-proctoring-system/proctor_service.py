@@ -328,7 +328,26 @@ def proctoring_loop():
             def run_yolo(f):
                 nonlocal last_obj_results, is_yolo_running
                 try:
-                    last_obj_results = session.object_detector.process(f)
+                    res = session.object_detector.process(f)
+                    ph = res.get("cell_phone")
+                    book = res.get("book")
+                    person = res.get("person")
+                    evidence_results = []
+                    if ph and ph.state == config.STATE_PHONE_DETECTED:
+                        evidence_results.append(ph)
+                        logger.warning(f"Phone detected in camera frame (Conf: {ph.similarity_score:.2f})")
+                    if book and book.state == config.STATE_BOOK_DETECTED:
+                        evidence_results.append(book)
+                        logger.warning(f"Book/material detected in camera frame (Conf: {book.similarity_score:.2f})")
+                    if person and person.state == config.STATE_MULTIPLE_PEOPLE:
+                        evidence_results.append(person)
+                        logger.warning(f"Multiple people detected in camera frame (Conf: {person.similarity_score:.2f})")
+                    if evidence_results and session.ui_renderer:
+                        evidence_frame = session.ui_renderer._draw_diagnostics(f.copy(), last_face_result, res, last_head_result)
+                        for detector_result in evidence_results:
+                            if detector_result.raw_data is not None:
+                                detector_result.raw_data["_evidence_frame"] = evidence_frame.copy()
+                    last_obj_results = res
                 except Exception as e:
                     logger.error(f"Object detection inference error: {e}")
                 finally:
@@ -560,6 +579,9 @@ def start_proctoring_session(req: StartSessionRequest, background_tasks: Backgro
                 session.camera.stop()
             if session.audio_manager:
                 session.audio_manager.stop()
+            if session.object_detector:
+                session.object_detector.stop_worker()
+                session.object_detector = None
 
         session.test_id = req.testId
         session.student_id = req.studentId
@@ -657,6 +679,10 @@ def stop_proctoring_session():
         if session.audio_manager:
             session.audio_manager.stop()
             session.audio_manager = None
+
+        if session.object_detector:
+            session.object_detector.stop_worker()
+            session.object_detector = None
 
         forward_summary_to_backend("Proctoring session ended normally upon exam completion")
 

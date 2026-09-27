@@ -28,22 +28,31 @@ class ObjectDetector(BaseDetector):
                  device: str = None):
 
         model_name = model_name or getattr(config, "YOLO_MODEL", "yolo11s.pt")
-        img_size   = img_size   or getattr(config, "YOLO_IMAGE_SIZE", 640)
+        img_size   = img_size   or getattr(config, "YOLO_IMAGE_SIZE", 480)
         device     = device     or getattr(config, "DEVICE", "cpu")
 
         phone_cfg  = getattr(config, "PHONE_DETECTION_CONFIG", {})
 
         pipeline_config = {
             # Confidence thresholds
-            "person_conf":     getattr(config, "PERSON_CONFIDENCE_THRESHOLD", 0.45),
-            "phone_conf":      phone_cfg.get("candidate_confidence", 0.20),
+            "person_conf":     getattr(config, "PERSON_CONFIDENCE_THRESHOLD", 0.40),
+            "phone_conf":      phone_cfg.get("candidate_confidence", 0.20),  # low floor for held/tilted phones
             "book_conf":       getattr(config, "BOOK_CONFIDENCE_THRESHOLD", 0.35),
 
-            # Temporal windows
-            "phone_window":    phone_cfg.get("temporal_window",   8),
-            "phone_min_pos":   phone_cfg.get("min_positive_frames", 3),
-            "book_window":     6,
-            "book_min_pos":    2,
+            # Temporal windows — instant detection (1 frame window, 1 hit, 0.0s cooldown)
+            "phone_window":    phone_cfg.get("temporal_window",      2),
+            "phone_min_pos":   phone_cfg.get("min_positive_frames",  1),
+            "phone_cooldown":  phone_cfg.get("cooldown_seconds",     0.0),
+            "book_window":     4,
+            "book_min_pos":    1,
+            "book_cooldown":   0.0,
+
+            # Tracker max_age — how many missed inference cycles before box is removed
+            # phone_max_age=1: box vanishes within 1 inference cycle (~100ms at 10Hz)
+            # person_max_age=8: stable person box through brief occlusions/movement
+            "phone_max_age":   1,
+            "book_max_age":    3,
+            "person_max_age":  8,
 
             # Inference settings
             "imgsz":           img_size,
@@ -61,7 +70,11 @@ class ObjectDetector(BaseDetector):
         self.detector_name = "ObjectDetector"
         logger.info("ObjectDetector (clean YOLO11 pipeline) initialized successfully.")
 
-    def process(self, frame: np.ndarray) -> Dict[str, DetectorResult]:
+    def stop_worker(self):
+        """No-op stub for worker lifecycle compatibility."""
+        pass
+
+    def process(self, frame: np.ndarray, *args, **kwargs) -> Dict[str, DetectorResult]:
         """
         Process a frame and return standard DetectorResult dict:
         {

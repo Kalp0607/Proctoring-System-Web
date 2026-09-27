@@ -5,8 +5,8 @@ Uses YOLO11 directly for all detections (person, phone, book).
 YOLO11 achieves 0.7-0.99 confidence on phones (cls=67), 0.9+ on persons (cls=0),
 and reliable book detection (cls=73, 84).
 
-Architecture: Single-pass YOLO11 → NMS → temporal window → state output.
-No Sentinel dependency for primary detection. Simple, testable, reliable.
+Architecture: Single-pass YOLO11 → NMS → SimpleTracker → temporal window → state output.
+No Sentinel dependency. Simple, fast, testable, reliable.
 """
 
 import time
@@ -17,7 +17,10 @@ import numpy as np
 import cv2
 
 import torch
-torch.set_num_threads(2)  # Prevent CPU thrashing when multiple AI models run concurrently
+try:
+    torch.set_num_threads(2)  # Prevent CPU thrashing with InsightFace & MediaPipe
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +68,7 @@ def _nms(detections: List[Dict], iou_thresh: float = 0.45) -> List[Dict]:
 class SimpleTracker:
     """Lightweight IoU tracker. Assigns stable IDs to detected objects."""
 
-    def __init__(self, iou_thresh: float = 0.30, max_age: int = 8):
+    def __init__(self, iou_thresh: float = 0.30, max_age: int = 2):
         self.tracks: List[Dict] = []
         self.next_id = 1
         self.iou_thresh = iou_thresh
@@ -73,7 +76,6 @@ class SimpleTracker:
 
     def update(self, detections: List[Dict]) -> List[Dict]:
         """Match detections to existing tracks; age out stale ones."""
-        matched = set()
         for track in self.tracks:
             track["age"] += 1
 
@@ -92,7 +94,6 @@ class SimpleTracker:
                     "age": 0,
                     "hits": best_track["hits"] + 1
                 })
-                matched.add(id(best_track))
             else:
                 self.tracks.append({
                     "id": self.next_id,
@@ -104,6 +105,7 @@ class SimpleTracker:
                 })
                 self.next_id += 1
 
+        # Remove stale tracks — max_age=1 means box vanishes within 1 missed frame
         self.tracks = [t for t in self.tracks if t["age"] <= self.max_age]
         return list(self.tracks)
 
@@ -112,39 +114,37 @@ class SimpleTracker:
 class TemporalWindow:
     """Tracks positive/negative detections over a rolling window."""
 
-    def __init__(self, window: int = 8, min_positives: int = 3):
-        self.window = deque(maxlen=window)
-        self.min_positives = min_positives
+    def __init__(self, window: int = 2, min_positives: int = 1, cooldown_sec: float = 0.0):
+        self.window = deque(maxlen=max(1, window))
+        self.min_positives = max(1, min_positives)
         self.confirmed = False
         self.cooldown_until = 0.0
-        self.cooldown_sec = 3.0
+        self.cooldown_sec = cooldown_sec
 
-    def update(self, detected: bool, confidence: float) -> Dict:
+    def update(self, detected: bool, confidence: float) -> Dict[str, Any]:
         self.window.append(1 if detected else 0)
         pos = sum(self.window)
         now = time.time()
 
-        if now < self.cooldown_until:
+        if self.cooldown_sec > 0.0 and now < self.cooldown_until:
             self.confirmed = False
         elif pos >= self.min_positives:
             self.confirmed = True
         else:
-            if self.confirmed:
-                # Grace: stay confirmed until window drops below half
-                if pos < max(1, self.min_positives // 2):
-                    self.confirmed = False
-                    self.cooldown_until = now + self.cooldown_sec
+            # No grace period — clear immediately when object is gone
+            self.confirmed = False
 
         return {
             "confirmed": self.confirmed,
             "positive_frames": pos,
             "window_size": len(self.window),
-            "score": confidence
+            "score": round(confidence, 3)
         }
 
     def reset(self):
         self.window.clear()
         self.confirmed = False
+        self.cooldown_until = 0.0
 
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
@@ -153,48 +153,71 @@ class ObjectDetectionPipeline:
     Clean YOLO11-based detection pipeline.
 
     Single-pass YOLO11 inference detects persons (cls=0), phones (cls=67),
-    and books (cls=73/84). Results flow through NMS → tracker → temporal window.
+    and books (cls=73). Results flow through NMS → SimpleTracker → temporal window.
 
-    Config keys (all optional with safe defaults):
-        person_conf       : float  (default 0.45)
-        phone_conf        : float  (default 0.20)
+    Config keys (all optional, sensible defaults for instant detection):
+        person_conf       : float  (default 0.40)
+        phone_conf        : float  (default 0.20)   # low floor to catch held/tilted phones
         book_conf         : float  (default 0.35)
-        phone_window      : int    (default 8)
-        phone_min_pos     : int    (default 3)
-        book_window       : int    (default 6)
-        book_min_pos      : int    (default 2)
-        imgsz             : int    (default 640)
+        phone_window      : int    (default 2)       # 2-frame window
+        phone_min_pos     : int    (default 1)       # confirm on first hit
+        phone_cooldown    : float  (default 0.0)     # no cooldown
+        phone_max_age     : int    (default 1)       # clear box after 1 missed frame
+        book_window       : int    (default 4)
+        book_min_pos      : int    (default 1)
+        book_cooldown     : float  (default 0.0)
+        book_max_age      : int    (default 3)
+        person_max_age    : int    (default 8)
+        imgsz             : int    (default 480)
         device            : str    (default 'cpu')
-        min_person_area   : float  (default 0.02, fraction of frame area)
-        max_phone_area    : float  (default 0.50, fraction of frame area)
+        min_person_area   : float  (default 0.02)
+        max_phone_area    : float  (default 0.50)
     """
 
     def __init__(self, yolo_model_path: str, config: Dict[str, Any] = None):
         from ultralytics import YOLO
         cfg = config or {}
 
-        self.person_conf     = cfg.get("person_conf",     0.45)
-        self.phone_conf      = cfg.get("phone_conf",      0.20)
-        self.book_conf       = cfg.get("book_conf",       0.35)
-        self.imgsz           = cfg.get("imgsz",           640)
-        self.device          = cfg.get("device",          "cpu")
-        self.min_person_area = cfg.get("min_person_area", 0.02)
-        self.max_phone_area  = cfg.get("max_phone_area",  0.50)
+        self.person_conf     = cfg.get("person_conf",     0.40)
+        self.phone_conf      = cfg.get("phone_conf",       0.20)  # low floor for high recall
+        self.book_conf       = cfg.get("book_conf",        0.35)
+        self.imgsz           = cfg.get("imgsz",            480)
+        self.device          = cfg.get("device",           "cpu")
+        self.min_person_area = cfg.get("min_person_area",  0.02)
+        self.max_phone_area  = cfg.get("max_phone_area",   0.50)
 
-        phone_window  = cfg.get("phone_window",  8)
-        phone_min_pos = cfg.get("phone_min_pos", 3)
-        book_window   = cfg.get("book_window",   6)
-        book_min_pos  = cfg.get("book_min_pos",  2)
+        # Floor conf for single YOLO pass — min of all per-class thresholds so
+        # YOLO's internal NMS doesn't discard candidates before per-class filters run.
+        self._yolo_pass_conf = min(self.person_conf, self.phone_conf, self.book_conf)
 
-        self.model = YOLO(yolo_model_path)
-        self.person_tracker = SimpleTracker(iou_thresh=0.40, max_age=15)
-        self.phone_tracker  = SimpleTracker(iou_thresh=0.30, max_age=8)
-        self.book_tracker   = SimpleTracker(iou_thresh=0.35, max_age=6)
-        self.phone_temporal = TemporalWindow(window=phone_window, min_positives=phone_min_pos)
-        self.book_temporal  = TemporalWindow(window=book_window,  min_positives=book_min_pos)
+        # Temporal windows
+        phone_window   = cfg.get("phone_window",   2)
+        phone_min_pos  = cfg.get("phone_min_pos",  1)
+        phone_cooldown = cfg.get("phone_cooldown", 0.0)
+        book_window    = cfg.get("book_window",    4)
+        book_min_pos   = cfg.get("book_min_pos",   1)
+        book_cooldown  = cfg.get("book_cooldown",  0.0)
+
+        # Tracker max_age: how many missed frames before track is purged
+        # phone_max_age=1 → box disappears within 1 inference cycle after leaving screen
+        phone_max_age  = cfg.get("phone_max_age",  1)
+        book_max_age   = cfg.get("book_max_age",   3)
+        person_max_age = cfg.get("person_max_age", 8)
+
+        self.model = YOLO(yolo_model_path, task="detect")
+        self.person_tracker = SimpleTracker(iou_thresh=0.40, max_age=person_max_age)
+        self.phone_tracker  = SimpleTracker(iou_thresh=0.30, max_age=phone_max_age)
+        self.book_tracker   = SimpleTracker(iou_thresh=0.35, max_age=book_max_age)
+        self.phone_temporal = TemporalWindow(window=phone_window, min_positives=phone_min_pos, cooldown_sec=phone_cooldown)
+        self.book_temporal  = TemporalWindow(window=book_window,  min_positives=book_min_pos,  cooldown_sec=book_cooldown)
 
         self._frame_id = 0
-        logger.info(f"ObjectDetectionPipeline ready: model={yolo_model_path}, device={self.device}")
+        logger.info(
+            f"ObjectDetectionPipeline ready: model={yolo_model_path}, "
+            f"device={self.device}, imgsz={self.imgsz}, "
+            f"phone_conf={self.phone_conf}, phone_max_age={phone_max_age}, "
+            f"phone_window={phone_window}/{phone_min_pos}"
+        )
 
     def _run_yolo(self, frame: np.ndarray, classes: List[int], conf: float) -> List[Dict]:
         """Run YOLO11 inference and return [{bbox, confidence, class_id, class_name}]."""
@@ -210,11 +233,17 @@ class ObjectDetectionPipeline:
         if results and results[0].boxes is not None:
             boxes = results[0].boxes
             names = self.model.names
-            for box in boxes:
-                cls_id = int(box.cls[0].cpu().numpy())
-                c      = float(box.conf[0].cpu().numpy())
-                xyxy   = box.xyxy[0].cpu().numpy().astype(int)
-                x1, y1, x2, y2 = xyxy
+
+            # Batch-extract all tensors in one .cpu().numpy() call each —
+            # eliminates 3×N per-box device-sync round-trips.
+            all_cls  = boxes.cls.cpu().numpy().astype(int)
+            all_conf = boxes.conf.cpu().numpy()
+            all_xyxy = boxes.xyxy.cpu().numpy().astype(int)
+
+            for i in range(len(all_cls)):
+                cls_id = int(all_cls[i])
+                c      = float(all_conf[i])
+                x1, y1, x2, y2 = all_xyxy[i]
                 detections.append({
                     "bbox":       (int(x1), int(y1), int(x2 - x1), int(y2 - y1)),
                     "confidence": round(c, 3),
@@ -253,10 +282,10 @@ class ObjectDetectionPipeline:
 
         Returns:
         {
-          "persons"      : List[Dict],   # [{bbox, confidence, ...}]
+          "persons"      : List[Dict],   # [{bbox, confidence, id, hits, age, source}]
           "phones"       : List[Dict],   # tracked phone detections
           "books"        : List[Dict],   # tracked book detections
-          "phone_state"  : Dict,         # {confirmed, positive_frames, score}
+          "phone_state"  : Dict,         # {confirmed, positive_frames, window_size, score}
           "book_state"   : Dict,
           "frame_id"     : int,
           "latency_ms"   : float
@@ -273,8 +302,10 @@ class ObjectDetectionPipeline:
         frame_area = fh * fw
 
         # ── Single YOLO11 pass: detect all classes at once ──────────────────
+        # Use the pre-computed floor conf (min of all per-class thresholds) so
+        # YOLO's internal NMS doesn't discard boxes that per-class filters need.
         all_classes = [CLS_PERSON, CLS_CELL_PHONE, CLS_REMOTE, CLS_BOOK]
-        raw = self._run_yolo(frame, classes=all_classes, conf=self.phone_conf)
+        raw = self._run_yolo(frame, classes=all_classes, conf=self._yolo_pass_conf)
 
         # ── Split by class ───────────────────────────────────────────────────
         raw_persons = [d for d in raw if d["class_id"] == CLS_PERSON]
@@ -285,7 +316,8 @@ class ObjectDetectionPipeline:
         raw_persons = [d for d in raw_persons if d["confidence"] >= self.person_conf]
         person_dets = _nms(self._filter_person(raw_persons, frame_area), iou_thresh=0.45)
 
-        # ── Filter phones by geometry ────────────────────────────────────────
+        # ── Filter phones by confidence + geometry ───────────────────────────
+        raw_phones = [d for d in raw_phones if d["confidence"] >= self.phone_conf]
         raw_phones = self._filter_phone(raw_phones, frame_area, fw, fh)
         phone_dets = _nms(raw_phones, iou_thresh=0.40)
 
@@ -293,7 +325,7 @@ class ObjectDetectionPipeline:
         raw_books = [d for d in raw_books if d["confidence"] >= self.book_conf]
         book_dets = _nms(raw_books, iou_thresh=0.40)
 
-        # ── Track objects ─────────────────────────────────────────────
+        # ── Track objects ─────────────────────────────────────────────────────
         person_tracks = self.person_tracker.update(person_dets)
         phone_tracks  = self.phone_tracker.update(phone_dets)
         book_tracks   = self.book_tracker.update(book_dets)
@@ -303,7 +335,7 @@ class ObjectDetectionPipeline:
         max_book_conf  = max((t["confidence"] for t in book_tracks),  default=0.0)
 
         phone_state = self.phone_temporal.update(len(phone_tracks) > 0, max_phone_conf)
-        book_state  = self.book_temporal.update( len(book_tracks)  > 0, max_book_conf)
+        book_state  = self.book_temporal.update(len(book_tracks) > 0,   max_book_conf)
 
         latency = (time.perf_counter() - t_start) * 1000.0
 
@@ -332,7 +364,6 @@ class ObjectDetectionPipeline:
     def render_debug_frame(self, frame: np.ndarray, output: Dict[str, Any]) -> np.ndarray:
         """Draws bounding boxes and HUD onto a copy of the frame for debug inspection."""
         out = frame.copy()
-        fh, fw = out.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
 
         def _box(img, bbox, color, label, thickness=2):

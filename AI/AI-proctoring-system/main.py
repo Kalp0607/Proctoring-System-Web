@@ -259,6 +259,10 @@ def main():
                 frame_count = 0
                 start_time = now
 
+            # Single copy shared by all workers that fire this tick.
+            # Avoids up to 3 independent frame.copy() calls (~2.76 MB each at 1280×720).
+            worker_frame = frame.copy()
+
             # A. Run Face Verification AI every Nth frame
             if (total_frames % config.FRAME_SKIP == 0 or last_face_result is None) and not is_face_running:
                 is_face_running = True
@@ -270,7 +274,7 @@ def main():
                         logger.error(f"Face verification inference error: {e}")
                     finally:
                         is_face_running = False
-                threading.Thread(target=run_face, args=(frame.copy(),), daemon=True).start()
+                threading.Thread(target=run_face, args=(worker_frame,), daemon=True).start()
 
             # B. Run Unified Shared YOLO Inference every Mth frame
             if (total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None) and not is_yolo_running:
@@ -279,15 +283,30 @@ def main():
                     nonlocal last_obj_results, is_yolo_running
                     try:
                         res = object_detector.process(f)
-                        last_obj_results = res
                         ph = res.get("cell_phone")
+                        book = res.get("book")
+                        person = res.get("person")
+                        evidence_results = []
                         if ph and ph.state == config.STATE_PHONE_DETECTED:
+                            evidence_results.append(ph)
                             logger.warning(f"Phone detected in camera frame (Conf: {ph.similarity_score:.2f})")
+                        if book and book.state == config.STATE_BOOK_DETECTED:
+                            evidence_results.append(book)
+                            logger.warning(f"Book/material detected in camera frame (Conf: {book.similarity_score:.2f})")
+                        if person and person.state == config.STATE_MULTIPLE_PEOPLE:
+                            evidence_results.append(person)
+                            logger.warning(f"Multiple people detected in camera frame (Conf: {person.similarity_score:.2f})")
+                        if evidence_results:
+                            evidence_frame = ui_renderer._draw_diagnostics(f.copy(), last_face_result, res, last_head_result)
+                            for detector_result in evidence_results:
+                                if detector_result.raw_data is not None:
+                                    detector_result.raw_data["_evidence_frame"] = evidence_frame.copy()
+                        last_obj_results = res
                     except Exception as e:
                         logger.error(f"Object detection inference error: {e}")
                     finally:
                         is_yolo_running = False
-                threading.Thread(target=run_yolo, args=(frame.copy(),), daemon=True).start()
+                threading.Thread(target=run_yolo, args=(worker_frame,), daemon=True).start()
 
             # C. Run Stage 4 3D Head Pose Estimation every Kth frame
             if (total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None) and not is_head_running:

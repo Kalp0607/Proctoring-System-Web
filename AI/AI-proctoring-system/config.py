@@ -34,79 +34,68 @@ IDENTITY_MISMATCH_THRESHOLD_SEC = 3.0
 
 # --- Stage 2, 3, & 3.5 Object Detector Thresholds ---
 # Ultralytics YOLO model selection — base COCO model for person, book, remote detection
-# YOLOv11n: PyTorch checkpoint
-YOLO_MODEL = "yolo11n.pt"
+# yolo11n.onnx: ONNX-optimized for maximum CPU speed (~2x faster than .pt)
+YOLO_MODEL = "yolo11n.onnx"
 
 # Backend & Service Integration Config
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:5000/api/proctoring")
 AI_SERVICE_PORT = int(os.environ.get("AI_SERVICE_PORT", "8000"))
 AI_SERVICE_HOST = os.environ.get("AI_SERVICE_HOST", "0.0.0.0")
 
-# Inference image size (imgsz): 320, 640, or 960
-YOLO_IMAGE_SIZE = 640                # High accuracy (33ms inference)
+# Inference image size (imgsz): 320, 384, 480, or 640
+YOLO_IMAGE_SIZE = 480                # Standard YOLO resolution for balanced speed & accuracy
 
 # --- Multi-Stage Phone Detection Pipeline Configuration ---
 PHONE_DETECTION_CONFIG = {
     # Inference Resolutions
-    "full_frame_imgsz": 640,            # Primary full-frame YOLO resolution (640 for fast real-time performance)
-    "roi_imgsz": 640,                   # High-res Person-ROI inspection resolution
+    "full_frame_imgsz": 480,            # Primary full-frame YOLO resolution (480 for fast real-time performance)
+    "roi_imgsz": 480,                   # Person-ROI inspection resolution
     "roi_padding": 0.25,                # Expanded crop margin around student body (25% on each side)
 
     # Dual-Threshold Strategy (High Detector Recall + Strict Violation Confirmation)
-    # Lowered from 0.25 → 0.15: Sentinel model returns ~0.086 on partially-visible edge phones;
-    # 0.15 gives them a chance to enter the temporal pipeline without greatly increasing FP rate.
-    "candidate_confidence": 0.15,       # Candidate generation threshold for high recall
-    "violation_confidence": 0.35,       # Individual detection confidence required for positive evidence
+    "candidate_confidence": 0.45,       # Phone detection threshold — only high-confidence detections tracked
+    "violation_confidence": 0.45,       # Confirmation threshold (same as candidate for instant confirm)
 
-    # Temporal Aggregation & State Machine
-    "temporal_window": 8,               # Rolling frame window size
-    "min_positive_frames": 4,           # Required positive frames within window to confirm violation
-    "cooldown_seconds": 3.0,            # Cooldown duration after violation resolution
+    # Temporal Aggregation & State Machine — instant detection
+    "temporal_window": 2,               # 2-frame rolling window (confirm on 1st hit)
+    "min_positive_frames": 1,           # Confirm on the very first positive YOLO frame
+    "cooldown_seconds": 0.0,            # No cooldown — box clears the moment phone leaves frame
 
     # Lightweight Multi-Frame Tracking
     "tracking_enabled": True,
-    "track_max_age": 8,                 # Increased: retain track longer through confidence dips
+    "track_max_age": 1,                 # Purge stale track within 1 missed inference cycle
     "track_iou_threshold": 0.25,        # Minimum IoU to associate candidate with existing track
-    "track_center_dist_threshold": 120.0, # Increased: allow larger jumps for moving phones
-
-    # Adaptive SAHI (Sliced Slicing Fallback)
-    "sahi_enabled": True,               # Enable adaptive slicing fallback for difficult/uncertain detections
-    "sahi_slice_size": 384,             # Slice dimension (384x384)
-    "sahi_overlap": 0.30,               # Increased overlap for better edge coverage
-    # Trigger SAHI more aggressively: any frame with a person and no confident phone gets sliced
-    "sahi_trigger_min_conf": 0.10,      # Lower band (was 0.20): catch very low-conf candidates too
-    "sahi_trigger_max_conf": 0.40,      # If candidate conf >= 0.40, full/ROI pass is already confident
-    "sahi_min_person_area_ratio": 0.15, # Minimum person area ratio before triggering fallback
+    "track_center_dist_threshold": 120.0, # Spatial gating for moving phones
 
     # Hand Proximity & Context Validation
-    "hand_context_enabled": True,
-    "hand_proximity_radius": 180,       # Increased radius for better hand-phone association
-    "hand_proximity_boost": 0.12,       # Confidence boost when phone is held or near student hand
+    "hand_context_enabled": False,
+    "hand_proximity_radius": 180,
+    "hand_proximity_boost": 0.12,
 
     # Physical Smartphone Geometry Constraints
-    "min_pixel_area": 200,              # Lowered from 300: allow slightly smaller/distant phones
-    "max_area_ratio": 0.30,             # Increased from 0.25: allow close-up phones
-    "max_width_ratio": 0.65,            # Increased from 0.60
-    "max_height_ratio": 0.80,           # Increased from 0.75
-    "min_aspect_ratio": 0.8,            # Lowered from 1.0: allow nearly-square phones (landscape mode)
-    "max_aspect_ratio": 6.0,            # Increased from 5.0: allow very tall phone crops
+    "min_pixel_area": 150,              # Allow realistic phone crops
+    "max_area_ratio": 0.50,
+    "max_width_ratio": 0.85,
+    "max_height_ratio": 0.90,
+    "min_aspect_ratio": 0.8,
+    "max_aspect_ratio": 6.0,
 
     # Static Background Suppression
-    "static_consecutive_cycles": 8,     # Increased: need more evidence before suppressing
-    "static_iou_threshold": 0.50        # Increased: require more overlap to classify as static
+    "static_consecutive_cycles": 8,
+    "static_iou_threshold": 0.50
 }
 
-# Shortcut tokens for backwards compatibility
+# General YOLO Detection Thresholds
 PHONE_CONFIDENCE_THRESHOLD = PHONE_DETECTION_CONFIG["violation_confidence"]
 PHONE_CANDIDATE_THRESHOLD = PHONE_DETECTION_CONFIG["candidate_confidence"]
 DEDICATED_PHONE_CONFIRM_THRESHOLD = PHONE_DETECTION_CONFIG["violation_confidence"]
-PERSON_CONFIDENCE_THRESHOLD = 0.60
-BOOK_CONFIDENCE_THRESHOLD = 0.40
+PERSON_CONFIDENCE_THRESHOLD = 0.40
+BOOK_CONFIDENCE_THRESHOLD = 0.35
 
-# Dedicated Model Weights
-PHONE_DEDICATED_MODEL = "sentinelvision_yolov8n.pt"
-PHONE_DEDICATED_MODEL_2 = None       # Disabled: faulty checkpoint
-ENABLE_TWO_STAGE_PHONE_DETECTION = True
+# Single Unified YOLO11n Model Only (Secondary/Dedicated models removed)
+PHONE_DEDICATED_MODEL = None
+PHONE_DEDICATED_MODEL_2 = None
+ENABLE_TWO_STAGE_PHONE_DETECTION = False
 HAND_DETECTION_CONFIDENCE = 0.40
 HAND_ROI_PADDING = 0.50
 
@@ -146,20 +135,24 @@ SPEAKER_DISTANCE_THRESHOLD = 0.22
 # Console & UI Diarization Telemetry Debug Mode
 SHOW_DIARIZATION_DEBUG = False
 
-# Run shared YOLO object detection as fast as possible (guarded by is_yolo_running flag)
-# OBJECT_DETECTION_INTERVAL=1 means: try every frame, but the is_yolo_running guard prevents
-# concurrent runs. Detection fires immediately when the previous inference completes.
-OBJECT_DETECTION_INTERVAL = 1        # Try every frame; is_yolo_running prevents overlap
+# Cadence matching Face Verification (every 3rd frame)
+OBJECT_DETECTION_INTERVAL = 3        # Run every 3rd frame, matching FaceVerifier cadence
 PERSON_DETECTION_INTERVAL = OBJECT_DETECTION_INTERVAL
 
 # Continuous temporal confirmation thresholds (in seconds)
-MULTIPLE_PERSON_CONFIRM_SECONDS = 2.0
-PHONE_CONFIRM_SECONDS = 0.1          # Instant confirmation on phone detection (instant popup banner & screenshot)
-BOOK_CONFIRM_SECONDS = 1.5
+MULTIPLE_PERSON_CONFIRM_SECONDS = 0.0   # Instant confirmation on detection (instant screenshot)
+PHONE_CONFIRM_SECONDS = 0.0             # Instant confirmation on phone detection (instant popup banner & screenshot)
+BOOK_CONFIRM_SECONDS = 0.0              # Instant confirmation on book detection (instant screenshot)
 
 # Stage 3.5 Rolling Window Temporal Ratio Smoothing Parameters
 TEMPORAL_WINDOW_SIZE = 5            # Rolling history window
 PHONE_WINDOW_MIN_DETECTIONS = 1     # Immediately confirm on positive detection cycle (instant pop-up)
+
+# Stage 3 YOLO Object Detection Smoothing & Acceleration (EMA filters like Head Pose)
+OBJECT_TRACKER_BBOX_ALPHA = 0.55     # EMA smoothing factor for object bounding box interpolation (eliminates box jitter)
+OBJECT_TRACKER_CONF_ALPHA = 0.65     # EMA smoothing factor for object detection confidence
+OBJECT_TRACKER_MAX_AGE = 6           # Coasting frames: maintains tracking continuity through brief drops/occlusions
+OBJECT_TRACKER_IOU_THRESH = 0.30     # Spatial IoU matching threshold
 
 # --- Stage 4 Head Pose Estimation & Screen-Adaptive Thresholds ---
 def detect_display_metrics():
@@ -253,13 +246,15 @@ HEAD_POSE_PROCESS_INTERVAL = 1
 SHOW_HEAD_POSE_DEBUG = False
 
 # Grace period (in seconds) for intermittent detection drops before clearing pending violations
-OBJECT_CLEAR_GRACE_SECONDS = 1.2
+# 0.0 allows boxes and violations to disappear as soon as object is not on screen
+OBJECT_CLEAR_GRACE_SECONDS = 0.0
+PHONE_CLEAR_GRACE_SECONDS = 0.0
 
 # Execution device ('cpu', 'cuda', '0', etc. Defaults to 'cpu' or auto GPU if available)
 DEVICE = "cpu"
 
 # Minimum cooldown duration (in seconds) between resolving an episode and creating a new one of the same type
-VIOLATION_COOLDOWN_SEC = 1.0
+VIOLATION_COOLDOWN_SEC = 0.0
 
 # --- Performance & Camera Settings ---
 WEBCAM_INDEX = 0

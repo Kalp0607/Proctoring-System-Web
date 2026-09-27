@@ -80,6 +80,9 @@ class ViolationManager:
         # Pending state trackers: {vtype: start_timestamp}
         self.pending_states: Dict[str, float] = {}
 
+        # Evidence frames captured at the moment a detector first reports a pending violation.
+        self.pending_evidence_frames: Dict[str, np.ndarray] = {}
+
         # Last seen timestamps for intermittent grace periods: {vtype: last_seen_timestamp}
         self.last_seen_times: Dict[str, float] = {}
 
@@ -155,6 +158,10 @@ class ViolationManager:
             if state_active:
                 self.last_seen_times[vtype] = current_time
 
+                evidence_frame = self._extract_evidence_frame(res)
+                if evidence_frame is not None:
+                    self.pending_evidence_frames[vtype] = evidence_frame
+
                 if vtype not in self.pending_states:
                     self.pending_states[vtype] = current_time
 
@@ -180,14 +187,19 @@ class ViolationManager:
 
                 if elapsed >= threshold and vtype not in self.active_episodes:
                     sample_res = res or DetectorResult(detector_name="SpeakerDetector", state=vtype, similarity_score=0.0, message=f"Confirmed {vtype}")
-                    self._start_violation_episode(vtype, sample_res, frame, current_time)
+                    evidence_frame = self.pending_evidence_frames.get(vtype)
+                    if evidence_frame is None:
+                        evidence_frame = self._extract_evidence_frame(sample_res, frame)
+                    self._start_violation_episode(vtype, sample_res, evidence_frame, current_time)
 
             else:
                 time_since_last = current_time - self.last_seen_times.get(vtype, 0.0)
                 if vtype == config.STATE_MULTIPLE_SPEAKERS:
                     grace_period = config.MULTIPLE_SPEAKER_CLEAR_GRACE_SECONDS
-                elif vtype in [config.STATE_PHONE_DETECTED, config.STATE_BOOK_DETECTED, config.STATE_MULTIPLE_PEOPLE]:
-                    grace_period = getattr(config, 'OBJECT_CLEAR_GRACE_SECONDS', 1.2)
+                elif vtype == config.STATE_PHONE_DETECTED:
+                    grace_period = getattr(config, 'PHONE_CLEAR_GRACE_SECONDS', 0.0)
+                elif vtype in [config.STATE_BOOK_DETECTED, config.STATE_MULTIPLE_PEOPLE]:
+                    grace_period = getattr(config, 'OBJECT_CLEAR_GRACE_SECONDS', 0.0)
                 else:
                     grace_period = config.HEAD_POSE_CLEAR_GRACE_SECONDS
 
@@ -203,9 +215,21 @@ class ViolationManager:
                 else:
                     if vtype in self.pending_states:
                         del self.pending_states[vtype]
+                    self.pending_evidence_frames.pop(vtype, None)
 
                     if vtype in self.active_episodes:
                         self._close_violation_episode(vtype, current_time)
+
+    def _extract_evidence_frame(self, result: Optional[DetectorResult], fallback_frame: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
+        """Returns the frame tied to the detector result, falling back to the current loop frame."""
+        evidence_frame = None
+        if result and result.raw_data:
+            evidence_frame = result.raw_data.get("_evidence_frame")
+        if evidence_frame is None:
+            evidence_frame = fallback_frame
+        if evidence_frame is None or evidence_frame.size == 0:
+            return None
+        return evidence_frame.copy()
 
     def _start_violation_episode(self, vtype: str, result: DetectorResult, frame: np.ndarray, start_time: float):
         """Triggers a new violation episode, captures ONE screenshot, and logs to JSON."""
