@@ -14,7 +14,87 @@ import {
   AlertCircle,
   Camera,
   Layers,
+  Calendar,
+  Zap,
+  RotateCcw,
+  Timer,
+  Sparkles,
 } from 'lucide-react';
+
+export const DEFAULT_STARTER_CODES = {
+  javascript: `// JavaScript (Node.js) Environment
+const readline = require('readline');
+
+function solve() {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: false
+    });
+
+    rl.on('line', (line) => {
+        // Read input from stdin and write your solution
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        
+        console.log(trimmed);
+    });
+}
+
+solve();`,
+
+  python: `# Python 3 Environment
+import sys
+
+def solve():
+    # Read all input from standard input (sys.stdin)
+    input_data = sys.stdin.read().strip()
+    if not input_data:
+        return
+
+    # Write your solution below
+    print(input_data)
+
+if __name__ == '__main__':
+    solve()`,
+
+  cpp: `// C++ (GCC) Environment
+#include <iostream>
+#include <vector>
+#include <string>
+#include <algorithm>
+
+using namespace std;
+
+int main() {
+    // Fast I/O
+    ios_base::sync_with_stdio(false);
+    cin.tie(NULL);
+
+    // Read input and write your solution below
+    string line;
+    while (getline(cin, line)) {
+        cout << line << "\\n";
+    }
+
+    return 0;
+}`,
+
+  java: `// Java (OpenJDK) Environment
+import java.util.*;
+import java.io.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+        String line = br.readLine();
+        if (line == null) return;
+
+        // Write your solution below
+        System.out.println(line);
+    }
+}`
+};
 
 export default function CreateTest() {
   const navigate = useNavigate();
@@ -71,7 +151,7 @@ export default function CreateTest() {
       options: [],
       correctOption: 0,
       description: 'Given an array of integers and an integer target, write a script that reads two space-separated numbers and prints their sum.',
-      starterCode: '// JavaScript Node environment\nconst readline = require("readline");\nconst rl = readline.createInterface({ input: process.stdin });\nrl.on("line", (line) => {\n  const [a, b] = line.trim().split(" ").map(Number);\n  console.log(a + b);\n});\n',
+      starterCode: DEFAULT_STARTER_CODES.javascript,
       language: 'javascript',
       testCases: [
         { input: '3 5\n', expectedOutput: '8', isHidden: false },
@@ -125,7 +205,7 @@ export default function CreateTest() {
           options: [],
           correctOption: 0,
           description: '',
-          starterCode: '// Write your solution here\n',
+          starterCode: DEFAULT_STARTER_CODES.javascript,
           language: 'javascript',
           testCases: [{ input: '', expectedOutput: '', isHidden: false }],
         },
@@ -138,6 +218,122 @@ export default function CreateTest() {
     updated[index][key] = val;
     setQuestions(updated);
   };
+
+  const handleLanguageChange = (qIndex, newLang) => {
+    const updated = [...questions];
+    updated[qIndex].language = newLang;
+    // Automatically switch starter code according to selected language
+    updated[qIndex].starterCode = DEFAULT_STARTER_CODES[newLang] || '// Write your solution here\n';
+    setQuestions(updated);
+  };
+
+  const resetQuestionCode = (qIndex) => {
+    const updated = [...questions];
+    const lang = updated[qIndex].language || 'javascript';
+    updated[qIndex].starterCode = DEFAULT_STARTER_CODES[lang] || '// Write your solution here\n';
+    setQuestions(updated);
+  };
+
+  // Set all timings to start right now
+  const setAllToNow = (durationMinutes = 60) => {
+    const rightNow = new Date();
+    rightNow.setSeconds(0, 0);
+    const startStr = formatDateForInput(rightNow);
+    const end = new Date(rightNow.getTime() + durationMinutes * 60 * 1000);
+    const endStr = formatDateForInput(end);
+    setFormData((prev) => ({
+      ...prev,
+      registrationDeadline: startStr,
+      startTime: startStr,
+      endTime: endStr,
+    }));
+  };
+
+  // Set an individual field to current time
+  const setFieldToNow = (field) => {
+    const rightNow = new Date();
+    rightNow.setSeconds(0, 0);
+    const nowStr = formatDateForInput(rightNow);
+
+    setFormData((prev) => {
+      const next = { ...prev, [field]: nowStr };
+      if (field === 'startTime') {
+        const curEnd = new Date(prev.endTime);
+        if (isNaN(curEnd.getTime()) || curEnd <= rightNow) {
+          next.endTime = formatDateForInput(new Date(rightNow.getTime() + 60 * 60 * 1000));
+        }
+        const curReg = new Date(prev.registrationDeadline);
+        if (isNaN(curReg.getTime()) || curReg > rightNow) {
+          next.registrationDeadline = nowStr;
+        }
+      }
+      return next;
+    });
+  };
+
+  // Quick duration helper from Start Time
+  const setDurationFromStart = (minutes) => {
+    const start = formData.startTime ? new Date(formData.startTime) : new Date();
+    const base = isNaN(start.getTime()) ? new Date() : start;
+    const end = new Date(base.getTime() + minutes * 60 * 1000);
+    setFormData((prev) => ({
+      ...prev,
+      endTime: formatDateForInput(end),
+    }));
+  };
+
+  // Quick deadline helper relative to Start Time
+  const setDeadlineRelativeToStart = (minutesBefore) => {
+    const start = formData.startTime ? new Date(formData.startTime) : new Date();
+    const base = isNaN(start.getTime()) ? new Date() : start;
+    const deadline = new Date(base.getTime() - minutesBefore * 60 * 1000);
+    setFormData((prev) => ({
+      ...prev,
+      registrationDeadline: formatDateForInput(deadline),
+    }));
+  };
+
+  // Helper to format friendly readable date
+  const formatFriendlyDate = (dateStr) => {
+    if (!dateStr) return '';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    } catch (_) {
+      return '';
+    }
+  };
+
+  // Calculate human-friendly duration
+  const getDurationSummary = () => {
+    if (!formData.startTime || !formData.endTime) return null;
+    const start = new Date(formData.startTime).getTime();
+    const end = new Date(formData.endTime).getTime();
+    if (isNaN(start) || isNaN(end)) return null;
+    const diffMs = end - start;
+    if (diffMs <= 0) return { isValid: false, text: 'End time must be after Start time' };
+    const totalMinutes = Math.floor(diffMs / (60 * 1000));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    let text = '';
+    if (hours > 0 && minutes > 0) {
+      text = `${hours} hr ${minutes} min`;
+    } else if (hours > 0) {
+      text = `${hours} hour${hours > 1 ? 's' : ''}`;
+    } else {
+      text = `${minutes} min${minutes > 1 ? 's' : ''}`;
+    }
+    return { isValid: true, text };
+  };
+
+  const durationInfo = getDurationSummary();
 
   const updateMcqOption = (qIndex, optIndex, val) => {
     const updated = [...questions];
@@ -316,59 +512,323 @@ export default function CreateTest() {
 
         {/* Section 2: Timing & Deadlines */}
         <div className="card" style={{ marginBottom: 24 }}>
-          <div className="card-header">
+          <div className="card-header" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
             <div>
-              <h2 className="card-title">2. Test Timing & Deadlines</h2>
-              <p className="card-subtitle">Pre-test room opens 15 minutes before Start Time; auto-submits strictly at End Time</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h2 className="card-title">2. Test Timing & Deadlines</h2>
+                {durationInfo?.isValid && (
+                  <span className="duration-pill">
+                    <Timer size={14} /> Duration: {durationInfo.text}
+                  </span>
+                )}
+              </div>
+              <p className="card-subtitle">
+                Configure when student registrations close, when the exam opens, and strict auto-submission.
+              </p>
+            </div>
+
+            {/* Quick Action to set test live now */}
+            <button
+              type="button"
+              onClick={() => setAllToNow(60)}
+              className="btn btn-primary btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
+              title="Set start time to current time, registration to now, and test length to 1 hour"
+            >
+              <Zap size={14} /> Set to Current Time (Start Now)
+            </button>
+          </div>
+
+          {/* Quick Presets Strip */}
+          <div className="timing-preset-bar">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+              <Sparkles size={15} color="var(--primary)" />
+              <span style={{ fontWeight: 600 }}>Quick Adjustments:</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <button
+                type="button"
+                className="timing-chip"
+                onClick={() => setAllToNow(30)}
+                title="Start right now with 30 minutes duration"
+              >
+                ⚡ Start Now (30m)
+              </button>
+              <button
+                type="button"
+                className="timing-chip"
+                onClick={() => setAllToNow(60)}
+                title="Start right now with 1 hour duration"
+              >
+                ⚡ Start Now (1h)
+              </button>
+              <button
+                type="button"
+                className="timing-chip"
+                onClick={() => {
+                  const rightNow = new Date();
+                  rightNow.setSeconds(0, 0);
+                  const start = new Date(rightNow.getTime() + 15 * 60 * 1000);
+                  const end = new Date(start.getTime() + 60 * 60 * 1000);
+                  setFormData((prev) => ({
+                    ...prev,
+                    registrationDeadline: formatDateForInput(start),
+                    startTime: formatDateForInput(start),
+                    endTime: formatDateForInput(end),
+                  }));
+                }}
+              >
+                🕒 Start in 15m (1h exam)
+              </button>
+              <button
+                type="button"
+                className="timing-chip"
+                onClick={() => {
+                  const tmrw = new Date();
+                  tmrw.setDate(tmrw.getDate() + 1);
+                  tmrw.setHours(10, 0, 0, 0);
+                  const end = new Date(tmrw.getTime() + 60 * 60 * 1000);
+                  setFormData((prev) => ({
+                    ...prev,
+                    registrationDeadline: formatDateForInput(tmrw),
+                    startTime: formatDateForInput(tmrw),
+                    endTime: formatDateForInput(end),
+                  }));
+                }}
+              >
+                📅 Tomorrow 10:00 AM
+              </button>
             </div>
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label" htmlFor="startTime">
-                Test Start Time <span className="req">*</span>
-              </label>
-              <input
-                id="startTime"
-                type="datetime-local"
-                className="form-control"
-                value={formData.startTime}
-                onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
-                required
-              />
-              <div className="form-hint">Late entry allowed, but end time remains fixed.</div>
+          {/* 3-Column Timing Cards */}
+          <div className="timing-grid">
+            {/* 1. Registration Deadline */}
+            <div className="timing-card card-reg">
+              <div>
+                <div className="timing-header">
+                  <div className="timing-title">
+                    <KeyRound size={16} color="#7c3aed" />
+                    <span>Registration Deadline</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFieldToNow('registrationDeadline')}
+                    className="btn btn-secondary btn-xs"
+                    title="Set Registration Deadline to Current Time"
+                  >
+                    <Clock size={11} /> Set to Now
+                  </button>
+                </div>
+                <input
+                  id="registrationDeadline"
+                  type="datetime-local"
+                  className="form-control"
+                  value={formData.registrationDeadline}
+                  onChange={(e) => setFormData({ ...formData, registrationDeadline: e.target.value })}
+                  required
+                />
+                <div className="timing-friendly-date">
+                  📅 {formatFriendlyDate(formData.registrationDeadline) || 'Not set'}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginTop: 8 }}>
+                  Quick presets:
+                </div>
+                <div className="timing-chips">
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setFormData({ ...formData, registrationDeadline: formData.startTime })}
+                  >
+                    Same as Start
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDeadlineRelativeToStart(15)}
+                  >
+                    15m before Start
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDeadlineRelativeToStart(60)}
+                  >
+                    1h before Start
+                  </button>
+                </div>
+                <div className="form-hint" style={{ marginTop: 8 }}>
+                  Students cannot enroll or verify after this cutoff.
+                </div>
+              </div>
             </div>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="endTime">
-                Test End Time (Strict Cutoff) <span className="req">*</span>
-              </label>
-              <input
-                id="endTime"
-                type="datetime-local"
-                className="form-control"
-                value={formData.endTime}
-                onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
-                required
-              />
-              <div className="form-hint">All active exams will be auto-submitted at this moment.</div>
+            {/* 2. Test Start Time */}
+            <div className="timing-card card-start">
+              <div>
+                <div className="timing-header">
+                  <div className="timing-title">
+                    <Clock size={16} color="#2563eb" />
+                    <span>Test Start Time</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFieldToNow('startTime')}
+                    className="btn btn-primary btn-xs"
+                    title="Set Test Start Time to Current Time"
+                  >
+                    <Zap size={11} /> Set to Now
+                  </button>
+                </div>
+                <input
+                  id="startTime"
+                  type="datetime-local"
+                  className="form-control"
+                  value={formData.startTime}
+                  onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
+                  required
+                />
+                <div className="timing-friendly-date">
+                  📅 {formatFriendlyDate(formData.startTime) || 'Not set'}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginTop: 8 }}>
+                  Quick presets:
+                </div>
+                <div className="timing-chips">
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setFieldToNow('startTime')}
+                  >
+                    Start Now
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => {
+                      const rightNow = new Date();
+                      rightNow.setMinutes(rightNow.getMinutes() + 10, 0, 0);
+                      setFormData({ ...formData, startTime: formatDateForInput(rightNow) });
+                    }}
+                  >
+                    +10 mins
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => {
+                      const rightNow = new Date();
+                      rightNow.setMinutes(rightNow.getMinutes() + 30, 0, 0);
+                      setFormData({ ...formData, startTime: formatDateForInput(rightNow) });
+                    }}
+                  >
+                    +30 mins
+                  </button>
+                </div>
+                <div className="form-hint" style={{ marginTop: 8 }}>
+                  Pre-test lobby unlocks 15 mins prior. Late entry allowed.
+                </div>
+              </div>
             </div>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="registrationDeadline">
-                Registration Deadline <span className="req">*</span>
-              </label>
-              <input
-                id="registrationDeadline"
-                type="datetime-local"
-                className="form-control"
-                value={formData.registrationDeadline}
-                onChange={(e) => setFormData({ ...formData, registrationDeadline: e.target.value })}
-                required
-              />
-              <div className="form-hint">Students cannot enroll after this deadline.</div>
+            {/* 3. Test End Time */}
+            <div className="timing-card card-end">
+              <div>
+                <div className="timing-header">
+                  <div className="timing-title">
+                    <Timer size={16} color="#d97706" />
+                    <span>Test End Time</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFieldToNow('endTime')}
+                    className="btn btn-secondary btn-xs"
+                    title="Set Test End Time to Current Time"
+                  >
+                    <Clock size={11} /> Set to Now
+                  </button>
+                </div>
+                <input
+                  id="endTime"
+                  type="datetime-local"
+                  className="form-control"
+                  value={formData.endTime}
+                  onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
+                  required
+                />
+                <div className="timing-friendly-date">
+                  📅 {formatFriendlyDate(formData.endTime) || 'Not set'}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginTop: 8 }}>
+                  Duration from Start:
+                </div>
+                <div className="timing-chips">
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDurationFromStart(30)}
+                  >
+                    +30m
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDurationFromStart(45)}
+                  >
+                    +45m
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDurationFromStart(60)}
+                  >
+                    +1 hr
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDurationFromStart(90)}
+                  >
+                    +1.5 hrs
+                  </button>
+                  <button
+                    type="button"
+                    className="timing-chip"
+                    onClick={() => setDurationFromStart(120)}
+                  >
+                    +2 hrs
+                  </button>
+                </div>
+                <div className="form-hint" style={{ marginTop: 8 }}>
+                  Strict cutoff: Active tests are auto-submitted at this moment.
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Real-time Timeline Validation Feedback */}
+          {formData.startTime && formData.endTime && new Date(formData.startTime) >= new Date(formData.endTime) && (
+            <div className="alert alert-danger" style={{ marginTop: 14, marginBottom: 0 }}>
+              <AlertCircle size={16} />
+              <span><strong>Invalid Schedule:</strong> Test End Time must be later than Test Start Time.</span>
+            </div>
+          )}
+
+          {formData.registrationDeadline && formData.startTime && new Date(formData.registrationDeadline) > new Date(formData.startTime) && (
+            <div className="alert alert-danger" style={{ marginTop: 14, marginBottom: 0 }}>
+              <AlertCircle size={16} />
+              <span><strong>Invalid Schedule:</strong> Registration Deadline cannot be after Test Start Time.</span>
+            </div>
+          )}
         </div>
 
         {/* Section 3: Student Registration Specification */}
@@ -607,7 +1067,7 @@ export default function CreateTest() {
                         <select
                           className="form-control"
                           value={q.language}
-                          onChange={(e) => updateQuestion(qIndex, 'language', e.target.value)}
+                          onChange={(e) => handleLanguageChange(qIndex, e.target.value)}
                         >
                           <option value="javascript">JavaScript (Node.js)</option>
                           <option value="python">Python 3</option>
@@ -618,13 +1078,29 @@ export default function CreateTest() {
                     </div>
 
                     <div className="form-group">
-                      <label className="form-label">Default Starter Code Template</label>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <label className="form-label" style={{ marginBottom: 0 }}>
+                          Default Starter Code Template ({q.language === 'cpp' ? 'C++' : q.language.charAt(0).toUpperCase() + q.language.slice(1)})
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => resetQuestionCode(qIndex)}
+                          className="btn btn-secondary btn-xs"
+                          style={{ fontSize: 11.5 }}
+                          title={`Reset code template to clean default ${q.language}`}
+                        >
+                          <RotateCcw size={12} /> Reset to {q.language === 'cpp' ? 'C++' : q.language.toUpperCase()} Default
+                        </button>
+                      </div>
                       <textarea
                         className="form-control"
-                        style={{ fontFamily: 'var(--font-mono)', fontSize: 13, minHeight: 110 }}
+                        style={{ fontFamily: 'var(--font-mono)', fontSize: 13, minHeight: 140 }}
                         value={q.starterCode}
                         onChange={(e) => updateQuestion(qIndex, 'starterCode', e.target.value)}
                       />
+                      <div className="form-hint">
+                        This default code template will be preloaded in candidate's code editor for this question.
+                      </div>
                     </div>
 
                     {/* Test Cases for Judge0 evaluation */}

@@ -190,11 +190,24 @@ def forward_violation_to_backend(episode, screenshot_path: Optional[str]):
 
         logger.info(f"Backend response for violation: {res.status_code}")
 
+        # Friendly simplified labels for frontend and telemetry notifications
+        friendly_labels = {
+            "LOOKING_AWAY": "Looking away",
+            "FACE_MISSING": "Face not visible",
+            "IDENTITY_MISMATCH": "Identity mismatch",
+            "MULTIPLE_PEOPLE": "Multiple people detected",
+            "PHONE_DETECTED": "Phone detected",
+            "BOOK_DETECTED": "Book detected",
+            "MULTIPLE_SPEAKERS": "Multiple voices detected",
+        }
+        clean_msg = friendly_labels.get(episode.vtype, "Warning detected")
+
         # Add event to queue for frontend notifications
         event_payload = {
             "id": episode.id,
             "type": episode.vtype,
-            "message": episode.message,
+            "message": clean_msg,
+            "raw_message": episode.message,
             "timestamp": episode.timestamp_str,
             "similarity": episode.similarity,
             "severity": "critical" if episode.vtype in ["PHONE_DETECTED", "MULTIPLE_PEOPLE", "IDENTITY_MISMATCH"] else "warning"

@@ -25,7 +25,6 @@ import {
   CheckCheck,
   PanelRightClose,
   PanelRightOpen,
-  Sparkles,
   Camera,
   ShieldCheck,
   Mic,
@@ -97,6 +96,62 @@ public class Main {
 }`,
 };
 
+const formatFriendlyWarning = (ev) => {
+  if (!ev) return 'Warning detected';
+  const type = (ev.type || '').toUpperCase();
+
+  if (type.includes('LOOKING_AWAY') || type.includes('LOOK') || type.includes('GAZE') || type.includes('HEAD')) {
+    return 'Looking away';
+  }
+  if (type.includes('FACE_MISSING') || type.includes('NO_FACE')) {
+    return 'Face not visible';
+  }
+  if (type.includes('MULTIPLE_PEOPLE') || type.includes('PERSON_COUNT')) {
+    return 'Multiple people detected';
+  }
+  if (type.includes('PHONE')) {
+    return 'Phone detected';
+  }
+  if (type.includes('BOOK')) {
+    return 'Book / notes detected';
+  }
+  if (type.includes('IDENTITY')) {
+    return 'Identity mismatch';
+  }
+  if (type.includes('SPEAKER') || type.includes('VOICE') || type.includes('AUDIO')) {
+    return 'Multiple voices detected';
+  }
+  if (type.includes('TAB_SWITCH')) {
+    return 'Tab switch detected';
+  }
+  if (type.includes('FULLSCREEN')) {
+    return 'Full screen exit detected';
+  }
+
+  let msg = ev.message || '';
+  if (/looking away|direction|diff:|yaw|pitch/i.test(msg)) {
+    return 'Looking away';
+  }
+  if (/face missing|no face/i.test(msg)) {
+    return 'Face not visible';
+  }
+  if (/multiple people/i.test(msg)) {
+    return 'Multiple people detected';
+  }
+  if (/phone/i.test(msg)) {
+    return 'Phone detected';
+  }
+  if (/book/i.test(msg)) {
+    return 'Book detected';
+  }
+
+  // Remove coordinates or brackets e.g. (Diff: [Y: ...])
+  msg = msg.replace(/\s*\([^)]*[\d°±:][^)]*\)/g, '').trim();
+  msg = msg.replace(/^VIOLATION:\s*/i, '').trim();
+
+  return msg || 'Warning detected';
+};
+
 export default function ExamEnvironment() {
   const { testId } = useParams();
   const navigate = useNavigate();
@@ -144,7 +199,6 @@ export default function ExamEnvironment() {
   const [showAiHud, setShowAiHud] = useState(true);
   const [aiHudMinimized, setAiHudMinimized] = useState(false);
   const [aiTelemetry, setAiTelemetry] = useState(null);
-  const [activeAiAlert, setActiveAiAlert] = useState(null);
   const lastAiEventCountRef = useRef(0);
 
   // Submit confirmation modal
@@ -312,14 +366,11 @@ export default function ExamEnvironment() {
             lastAiEventCountRef.current = res.events.length;
             const latestEv = newEvents[newEvents.length - 1];
 
-            setActiveAiAlert(latestEv);
             setViolationsCount((prev) => prev + newEvents.length);
 
-            showToast(`⚠️ AI Warning: ${latestEv.message}`, 'error');
-
-            setTimeout(() => {
-              setActiveAiAlert((cur) => (cur?.id === latestEv.id ? null : cur));
-            }, 6000);
+            // Short, concise React Toast pop-up without technical telemetry/coordinates
+            const friendlyWarning = formatFriendlyWarning(latestEv);
+            showToast(friendlyWarning, 'warning');
           }
         }
       } catch (_) {}
@@ -859,8 +910,14 @@ export default function ExamEnvironment() {
     <div className="exam-layout">
       {/* Non-intrusive In-App Toast */}
       {toast && (
-        <div className={`in-app-toast ${toast.type === 'error' ? 'toast-error' : 'toast-success'}`}>
-          {toast.type === 'error' ? <XCircle size={18} color="#f87171" /> : <CheckCircle2 size={18} color="#4ade80" />}
+        <div className={`in-app-toast ${toast.type === 'error' ? 'toast-error' : toast.type === 'warning' ? 'toast-warning' : 'toast-success'}`}>
+          {toast.type === 'error' ? (
+            <XCircle size={18} color="#f87171" />
+          ) : toast.type === 'warning' ? (
+            <AlertTriangle size={18} color="#f59e0b" />
+          ) : (
+            <CheckCircle2 size={18} color="#4ade80" />
+          )}
           <span>{toast.message}</span>
         </div>
       )}
@@ -933,38 +990,7 @@ export default function ExamEnvironment() {
         </div>
       </header>
 
-      {/* Real-time AI Proctoring Violation Notification Banner */}
-      {activeAiAlert && (
-        <div
-          style={{
-            background: '#dc2626',
-            color: '#ffffff',
-            padding: '10px 20px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            fontWeight: 600,
-            fontSize: 13,
-            zIndex: 9999,
-            boxShadow: '0 4px 12px rgba(220, 38, 38, 0.35)',
-            borderBottom: '2px solid #b91c1c',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <AlertTriangle size={18} />
-            <span>
-              <strong>AI PROCTORING ALERT:</strong> {activeAiAlert.message} — Infraction logged to examiner report!
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setActiveAiAlert(null)}
-            style={{ background: 'none', border: 'none', color: '#ffffff', cursor: 'pointer', fontSize: 16 }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
+
 
       {/* Exam Body: Question Workspace + Navigation Sidebar */}
       <div className={`exam-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>

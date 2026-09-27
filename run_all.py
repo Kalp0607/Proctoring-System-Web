@@ -37,7 +37,7 @@ def log_stream(proc, prefix, color):
                 break
             text = line.rstrip()
             if text:
-                print(f"{color}{BOLD}[{prefix}]{RESET} {text}")
+                print(f"{color}{BOLD}[{prefix}]{RESET} {text}", flush=True)
     except Exception:
         pass
 
@@ -45,6 +45,11 @@ def log_stream(proc, prefix, color):
 def start_service(cmd, cwd, prefix, color):
     """Starts a subprocess and spawns a thread to stream its logs."""
     is_windows = sys.platform.startswith("win")
+    import shutil
+    if is_windows and isinstance(cmd, list) and cmd[0] == "npm":
+        npm_bin = shutil.which("npm.cmd") or "npm"
+        cmd = [npm_bin] + cmd[1:]
+
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd),
