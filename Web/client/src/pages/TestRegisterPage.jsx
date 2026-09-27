@@ -368,21 +368,19 @@ export default function TestRegisterPage() {
                 )}
 
                 {/* Webcam Stream */}
-                {webcamActive && (
-                  <div style={{ marginBottom: 14, textAlign: 'center' }}>
-                    <video
-                      ref={videoRef}
-                      style={{ width: 320, height: 240, borderRadius: 'var(--radius-md)', background: '#000' }}
-                      autoPlay
-                      playsInline
-                    />
-                    <div style={{ marginTop: 10 }}>
-                      <button type="button" onClick={captureWebcamSnapshot} className="btn btn-primary btn-sm">
-                        <Camera size={14} /> Snap Photo
-                      </button>
-                    </div>
+                <div style={{ marginBottom: 14, textAlign: 'center', display: webcamActive ? 'block' : 'none' }}>
+                  <video
+                    ref={videoRef}
+                    style={{ width: 320, height: 240, borderRadius: 'var(--radius-md)', background: '#000' }}
+                    autoPlay
+                    playsInline
+                  />
+                  <div style={{ marginTop: 10 }}>
+                    <button type="button" onClick={captureWebcamSnapshot} className="btn btn-primary btn-sm">
+                      <Camera size={14} /> Snap Photo
+                    </button>
                   </div>
-                )}
+                </div>
 
                 <canvas ref={canvasRef} style={{ display: 'none' }} />
 

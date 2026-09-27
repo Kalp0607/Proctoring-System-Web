@@ -250,9 +250,16 @@ class ViolationManager:
                     extra_metadata[field] = result.raw_data[field]
 
         # 1. Determine whether to save screenshot evidence
-        # Audio violations (e.g. MULTIPLE_SPEAKERS) do not capture webcam screenshots
+        # Audio violations and Looking Away violations do not capture webcam screenshots
         is_audio_violation = (vtype == config.STATE_MULTIPLE_SPEAKERS)
-        allow_screenshot = getattr(config, 'SAVE_SCREENSHOTS_FOR_AUDIO', False) if is_audio_violation else True
+        is_looking_away = (vtype == config.STATE_LOOKING_AWAY)
+        
+        if is_audio_violation:
+            allow_screenshot = getattr(config, 'SAVE_SCREENSHOTS_FOR_AUDIO', False)
+        elif is_looking_away:
+            allow_screenshot = False
+        else:
+            allow_screenshot = True
 
         screenshot_full_path = None
         relative_screenshot_path = None

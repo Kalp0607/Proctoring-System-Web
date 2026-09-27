@@ -381,11 +381,9 @@ export default function PreTestPanel() {
                   )}
                 </div>
 
-                {cameraPermission && (
-                  <div className="camera-preview-box" style={{ marginTop: 8, height: 130 }}>
-                    <video ref={videoRef} autoPlay playsInline muted />
-                  </div>
-                )}
+                <div className="camera-preview-box" style={{ marginTop: 8, height: 130, display: cameraPermission ? 'block' : 'none' }}>
+                  <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} />
+                </div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   Camera will be continuously monitored by the multimodal AI engine during the exam.
                 </div>
