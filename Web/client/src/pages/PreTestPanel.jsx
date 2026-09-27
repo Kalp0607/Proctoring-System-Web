@@ -47,16 +47,24 @@ export default function PreTestPanel() {
       setAiServiceStatus('offline');
     }
   };
+  const [webcamStream, setWebcamStream] = useState(null);
 
   const stopCameraPreview = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      try {
-        const stream = videoRef.current.srcObject;
-        stream.getTracks().forEach((track) => track.stop());
-        videoRef.current.srcObject = null;
-      } catch (_) {}
+    if (webcamStream) {
+      webcamStream.getTracks().forEach((track) => track.stop());
+      setWebcamStream(null);
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
   };
+
+  useEffect(() => {
+    if (videoRef.current && webcamStream) {
+      videoRef.current.srcObject = webcamStream;
+      videoRef.current.play().catch(e => console.error(e));
+    }
+  }, [webcamStream, cameraPermission]);
 
   useEffect(() => {
     return () => {
@@ -150,10 +158,7 @@ export default function PreTestPanel() {
   const testCameraPreview = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
+      setWebcamStream(stream);
       setCameraPermission(true);
     } catch (err) {
       alert('Camera access check: ' + err.message);
@@ -381,9 +386,11 @@ export default function PreTestPanel() {
                   )}
                 </div>
 
-                <div className="camera-preview-box" style={{ marginTop: 8, height: 130, display: cameraPermission ? 'block' : 'none' }}>
-                  <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} />
-                </div>
+                {cameraPermission && (
+                  <div className="camera-preview-box" style={{ marginTop: 8, height: 130 }}>
+                    <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} />
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   Camera will be continuously monitored by the multimodal AI engine during the exam.
                 </div>

@@ -31,8 +31,25 @@ export default function TestRegisterPage() {
 
   // Webcam snapshot state
   const [webcamActive, setWebcamActive] = useState(false);
+  const [stream, setStream] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(e => console.error(e));
+    }
+  }, [stream, webcamActive]);
+
+  useEffect(() => {
+    // Cleanup on unmount
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [stream]);
 
   // Password verification if arriving via link
   const [passwordVerified, setPasswordVerified] = useState(false);
@@ -83,11 +100,8 @@ export default function TestRegisterPage() {
   const startWebcam = async () => {
     try {
       setWebcamActive(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      setStream(mediaStream);
     } catch (err) {
       alert('Could not access webcam: ' + err.message);
       setWebcamActive(false);
@@ -368,19 +382,21 @@ export default function TestRegisterPage() {
                 )}
 
                 {/* Webcam Stream */}
-                <div style={{ marginBottom: 14, textAlign: 'center', display: webcamActive ? 'block' : 'none' }}>
-                  <video
-                    ref={videoRef}
-                    style={{ width: 320, height: 240, borderRadius: 'var(--radius-md)', background: '#000' }}
-                    autoPlay
-                    playsInline
-                  />
-                  <div style={{ marginTop: 10 }}>
-                    <button type="button" onClick={captureWebcamSnapshot} className="btn btn-primary btn-sm">
-                      <Camera size={14} /> Snap Photo
-                    </button>
+                {webcamActive && (
+                  <div style={{ marginBottom: 14, textAlign: 'center' }}>
+                    <video
+                      ref={videoRef}
+                      style={{ width: 320, height: 240, borderRadius: 'var(--radius-md)', background: '#000' }}
+                      autoPlay
+                      playsInline
+                    />
+                    <div style={{ marginTop: 10 }}>
+                      <button type="button" onClick={captureWebcamSnapshot} className="btn btn-primary btn-sm">
+                        <Camera size={14} /> Snap Photo
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 <canvas ref={canvasRef} style={{ display: 'none' }} />
 
