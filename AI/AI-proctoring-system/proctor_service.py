@@ -163,88 +163,105 @@ def resolve_photo_path(photo_url: Optional[str], photo_base64: Optional[str]) ->
 
 
 def forward_violation_to_backend(episode, screenshot_path: Optional[str]):
-    """Sends confirmed violation episode and evidence screenshot to Express backend."""
-    try:
-        backend_api = session.backend_url.rstrip("/")
-        url = f"{backend_api}/violation"
+    """Sends confirmed violation episode and evidence screenshot to Express backend asynchronously."""
+    # Friendly simplified labels for frontend and telemetry notifications
+    friendly_labels = {
+        "LOOKING_AWAY": "Looking away",
+        "FACE_MISSING": "Face not visible",
+        "IDENTITY_MISMATCH": "Identity mismatch",
+        "MULTIPLE_PEOPLE": "Multiple people detected",
+        "PHONE_DETECTED": "Phone detected",
+        "BOOK_DETECTED": "Book detected",
+        "MULTIPLE_SPEAKERS": "Multiple voices detected",
+    }
+    clean_msg = friendly_labels.get(episode.vtype, "Warning detected")
 
-        data = {
-            "testId": session.test_id,
-            "studentId": session.student_id,
-            "type": episode.vtype,
-            "message": episode.message,
-            "duration_seconds": episode.duration_seconds or 0,
-            "similarity": episode.similarity,
-        }
-
-        files = None
-        opened_file = None
-        if screenshot_path and os.path.exists(screenshot_path):
-            opened_file = open(screenshot_path, "rb")
-            files = {"screenshot": (os.path.basename(screenshot_path), opened_file, "image/jpeg")}
-
-        logger.info(f"Forwarding AI violation [{episode.vtype}] to backend: {url}")
-        res = requests.post(url, data=data, files=files, timeout=8)
-        if opened_file:
-            opened_file.close()
-
-        logger.info(f"Backend response for violation: {res.status_code}")
-
-        # Friendly simplified labels for frontend and telemetry notifications
-        friendly_labels = {
-            "LOOKING_AWAY": "Looking away",
-            "FACE_MISSING": "Face not visible",
-            "IDENTITY_MISMATCH": "Identity mismatch",
-            "MULTIPLE_PEOPLE": "Multiple people detected",
-            "PHONE_DETECTED": "Phone detected",
-            "BOOK_DETECTED": "Book detected",
-            "MULTIPLE_SPEAKERS": "Multiple voices detected",
-        }
-        clean_msg = friendly_labels.get(episode.vtype, "Warning detected")
-
-        # Add event to queue for frontend notifications
-        event_payload = {
-            "id": episode.id,
-            "type": episode.vtype,
-            "message": clean_msg,
-            "raw_message": episode.message,
-            "timestamp": episode.timestamp_str,
-            "similarity": episode.similarity,
-            "severity": "critical" if episode.vtype in ["PHONE_DETECTED", "MULTIPLE_PEOPLE", "IDENTITY_MISMATCH"] else "warning"
-        }
+    # Add event to queue for frontend notifications immediately
+    event_payload = {
+        "id": episode.id,
+        "type": episode.vtype,
+        "message": clean_msg,
+        "raw_message": episode.message,
+        "timestamp": episode.timestamp_str,
+        "similarity": episode.similarity,
+        "severity": "critical" if episode.vtype in ["PHONE_DETECTED", "MULTIPLE_PEOPLE", "IDENTITY_MISMATCH"] else "warning"
+    }
+    with session.lock:
         session.recent_events.append(event_payload)
 
-    except Exception as e:
-        logger.error(f"Failed to forward violation to backend: {e}")
+    def _post_worker():
+        opened_file = None
+        try:
+            backend_api = session.backend_url.rstrip("/")
+            url = f"{backend_api}/violation"
+
+            data = {
+                "testId": session.test_id,
+                "studentId": session.student_id,
+                "type": episode.vtype,
+                "message": episode.message,
+                "duration_seconds": episode.duration_seconds or 0,
+                "similarity": episode.similarity,
+            }
+
+            files = None
+            if screenshot_path and os.path.exists(screenshot_path):
+                opened_file = open(screenshot_path, "rb")
+                files = {"screenshot": (os.path.basename(screenshot_path), opened_file, "image/jpeg")}
+
+            logger.info(f"Forwarding AI violation [{episode.vtype}] to backend: {url}")
+            res = requests.post(url, data=data, files=files, timeout=6)
+            logger.info(f"Backend response for violation: {res.status_code}")
+        except Exception as e:
+            logger.debug(f"Violation backend post notice: {e}")
+        finally:
+            if opened_file:
+                try:
+                    opened_file.close()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_post_worker, daemon=True).start()
 
 
 def forward_summary_to_backend(notes: str = "AI Proctoring session completed"):
-    """Submits the final session summary and risk rating to Express backend."""
-    try:
-        backend_api = session.backend_url.rstrip("/")
-        url = f"{backend_api}/session-summary"
+    """Submits the final session summary and risk rating to Express backend in a background worker."""
+    def _summary_worker():
+        try:
+            backend_api = session.backend_url.rstrip("/")
+            url = f"{backend_api}/session-summary"
 
-        active_count = len(session.recent_events)
-        critical_count = sum(1 for e in session.recent_events if e.get("severity") == "critical")
+            with session.lock:
+                active_count = len(session.recent_events)
+                critical_count = sum(1 for e in session.recent_events if e.get("severity") == "critical")
+                test_id = session.test_id
+                student_id = session.student_id
+                looking_away_count = sum(1 for e in session.recent_events if e.get("type") == config.STATE_LOOKING_AWAY)
 
-        if critical_count >= 1 or active_count >= 4:
-            risk_level = "High"
-        elif active_count >= 1:
-            risk_level = "Medium"
-        else:
-            risk_level = "Low"
+            if critical_count >= 1 or active_count >= 4:
+                risk_level = "High"
+            elif active_count >= 1:
+                risk_level = "Medium"
+            else:
+                risk_level = "Low"
 
-        payload = {
-            "testId": session.test_id,
-            "studentId": session.student_id,
-            "riskLevel": risk_level,
-            "notes": f"{notes} | Total AI Infractions: {active_count} (Critical: {critical_count})"
-        }
+            notes_extra = ""
+            if looking_away_count > 0:
+                notes_extra = f" | Looking Away: {looking_away_count} times"
 
-        logger.info(f"Submitting AI session summary to backend: {payload}")
-        requests.post(url, json=payload, timeout=8)
-    except Exception as e:
-        logger.error(f"Failed to submit session summary to backend: {e}")
+            payload = {
+                "testId": test_id,
+                "studentId": student_id,
+                "riskLevel": risk_level,
+                "notes": f"{notes}{notes_extra} | Total AI Infractions: {active_count} (Critical: {critical_count})"
+            }
+
+            logger.info(f"Submitting AI session summary to backend: {payload}")
+            requests.post(url, json=payload, timeout=6)
+        except Exception as e:
+            logger.debug(f"Summary backend post notice: {e}")
+
+    threading.Thread(target=_summary_worker, daemon=True).start()
 
 
 def proctoring_loop():
@@ -607,9 +624,7 @@ def start_proctoring_session(req: StartSessionRequest, background_tasks: Backgro
 
         # 5. Initialize Camera
         session.camera = CameraManager(camera_index=req.cameraIndex, width=config.WEBCAM_WIDTH, height=config.WEBCAM_HEIGHT)
-        if not session.camera.start():
-            session.audio_manager.stop()
-            raise HTTPException(status_code=500, detail=f"Cannot initialize camera at index {req.cameraIndex}")
+        session.camera.start()
 
         # 6. Initialize Violation Manager with auto-backend hook
         session.violation_logger = ViolationLogger()
@@ -658,6 +673,9 @@ def stop_proctoring_session():
             session.audio_manager.stop()
             session.audio_manager = None
 
+        if session.violation_mgr:
+            session.violation_mgr.print_post_test_logs()
+
         forward_summary_to_backend("Proctoring session ended normally upon exam completion")
 
         session.is_active = False
@@ -686,17 +704,24 @@ def get_session_status():
 def generate_mjpeg_stream():
     """Generator yielding JPEG multipart boundary frames for live streaming."""
     blank_frame = np.zeros((270, 480, 3), dtype=np.uint8)
-    cv2.putText(blank_frame, "AI Proctoring Standby", (80, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 2)
-    _, blank_jpeg = cv2.imencode(".jpg", blank_frame)
+    cv2.rectangle(blank_frame, (0, 0), (480, 270), (18, 24, 38), -1)
+    cv2.putText(blank_frame, "AI Proctoring Feed Initializing...", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 195, 215), 2)
+    _, blank_jpeg = cv2.imencode(".jpg", blank_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
     blank_bytes = blank_jpeg.tobytes()
 
     while True:
         with session.lock:
             frame_bytes = session.latest_jpeg or blank_bytes
-            active = session.is_active
 
-        yield (b"--frame\r\n"
-               b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+        header = (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n"
+            b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n\r\n"
+        )
+        try:
+            yield header + frame_bytes + b"\r\n"
+        except (GeneratorExit, ConnectionResetError, BrokenPipeError):
+            break
         time.sleep(0.04)  # ~25 FPS
 
 

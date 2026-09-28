@@ -371,6 +371,7 @@ def main():
         audio_manager.stop()
         camera.stop()
         cv2.destroyAllWindows()
+        violation_mgr.print_post_test_logs()
         logger.info("Session closed successfully.")
 
 

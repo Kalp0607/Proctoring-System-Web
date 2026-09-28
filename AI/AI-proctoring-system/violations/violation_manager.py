@@ -226,9 +226,11 @@ class ViolationManager:
                     extra_metadata[field] = result.raw_data[field]
 
         # 1. Determine whether to save screenshot evidence
-        # Audio violations (e.g. MULTIPLE_SPEAKERS) do not capture webcam screenshots
+        # Audio violations (MULTIPLE_SPEAKERS) and Looking Away do not capture/attach screenshots.
+        # Looking Away is logged strictly as a count without screenshot evidence.
         is_audio_violation = (vtype == config.STATE_MULTIPLE_SPEAKERS)
-        allow_screenshot = getattr(config, 'SAVE_SCREENSHOTS_FOR_AUDIO', False) if is_audio_violation else True
+        is_looking_away = (vtype == config.STATE_LOOKING_AWAY)
+        allow_screenshot = False if (is_audio_violation or is_looking_away) else True
 
         screenshot_full_path = None
         relative_screenshot_path = None
@@ -257,7 +259,10 @@ class ViolationManager:
             else:
                 logger.warning("Attempted to save screenshot but frame was empty.")
         else:
-            logger.info(f"Screenshot capture skipped for audio violation: [{vtype}]")
+            if is_looking_away:
+                logger.info(f"Screenshot capture skipped for Looking Away (count-only requirement): [{vtype}]")
+            else:
+                logger.info(f"Screenshot capture skipped for audio violation: [{vtype}]")
 
         # 2. Construct episode
         episode = ViolationEpisode(
@@ -280,7 +285,7 @@ class ViolationManager:
         ui_time = now_dt.strftime("%H:%M:%S")
         labels = {
             config.STATE_FACE_MISSING: "Face missing",
-            config.STATE_IDENTITY_MISMATCH: "Identity mismatch",
+            config.STATE_IDENTITY_MISMATCH: "Face Mismatch",
             config.STATE_MULTIPLE_PEOPLE: "Multiple people",
             config.STATE_PHONE_DETECTED: "Phone detected",
             config.STATE_BOOK_DETECTED: "Book detected",
@@ -352,3 +357,63 @@ class ViolationManager:
     def get_pending_status(self, vtype: str) -> Dict[str, Any]:
         """Returns raw detection vs confirmed violation state for UI debugging."""
         return self.pending_ui_states.get(vtype, {"pending": False, "active": False, "conf": 0.0, "elapsed": 0.0, "ratio_str": ""})
+
+    def get_post_test_summary(self) -> Dict[str, Any]:
+        """
+        Generates structured post-test violation logs:
+        - If Face Mismatch is detected, logs violation with corresponding screenshot.
+        - For other screenshot-based violations, logs violation with captured screenshot.
+        - Looking Away is the only exception: no screenshot attached, only count format 'Looking Away: X times'.
+        """
+        records = self.logger.get_all_violations()
+        looking_away_count = sum(1 for r in records if r.get("type") == config.STATE_LOOKING_AWAY)
+        other_records = [r for r in records if r.get("type") != config.STATE_LOOKING_AWAY]
+
+        formatted_logs = []
+        if looking_away_count > 0:
+            formatted_logs.append({
+                "type": "LOOKING_AWAY",
+                "display": f"Looking Away: {looking_away_count} times",
+                "count": looking_away_count,
+                "screenshot": None
+            })
+
+        for r in other_records:
+            vtype = r.get("type", "")
+            is_face_mismatch = (vtype == config.STATE_IDENTITY_MISMATCH)
+            label = "Face Mismatch" if is_face_mismatch else vtype
+            formatted_logs.append({
+                "type": vtype,
+                "label": label,
+                "display": f"{label}: {r.get('message', '')} ({r.get('timestamp', '')})",
+                "screenshot": r.get("screenshot"),
+                "similarity": r.get("similarity"),
+                "timestamp": r.get("timestamp"),
+                "message": r.get("message")
+            })
+
+        return {
+            "total_violations": len(records),
+            "looking_away_count": looking_away_count,
+            "looking_away_formatted": f"Looking Away: {looking_away_count} times" if looking_away_count > 0 else None,
+            "logs": formatted_logs
+        }
+
+    def print_post_test_logs(self):
+        """Prints post-test violation logs to console / logger."""
+        summary = self.get_post_test_summary()
+        logger.info("=" * 65)
+        logger.info("                 POST-TEST VIOLATION LOGS")
+        logger.info("=" * 65)
+        if summary["total_violations"] == 0:
+            logger.info("No proctoring violations recorded during examination.")
+        else:
+            if summary["looking_away_count"] > 0:
+                logger.info(f"* {summary['looking_away_formatted']}")
+            for log_item in summary["logs"]:
+                if log_item["type"] == "LOOKING_AWAY":
+                    continue
+                sc = log_item.get("screenshot")
+                sc_info = f" [Attached Screenshot: {sc}]" if sc else " [No screenshot]"
+                logger.info(f"* {log_item['display']}{sc_info}")
+        logger.info("=" * 65)
