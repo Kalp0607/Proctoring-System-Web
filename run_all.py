@@ -88,18 +88,46 @@ def shutdown_all(signum=None, frame=None):
     sys.exit(0)
 
 
+import socket
+
+
+def get_local_ip():
+    """Detects local LAN/Wi-Fi IPv4 address for multi-device network access."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+
 def main():
     signal.signal(signal.SIGINT, shutdown_all)
     signal.signal(signal.SIGTERM, shutdown_all)
+
+    local_ip = get_local_ip()
 
     print(f"""
 ======================================================================
      AI-PROCTORED ONLINE EXAMINATION SYSTEM - FULL APPLICATION
   MERN Web Platform + Multimodal Computer Vision & Audio AI Engine
 ======================================================================
-  * Node Express Backend  : http://localhost:5000
-  * Vite React Frontend   : http://localhost:5173
-  * FastAPI AI Proctoring : http://localhost:8000
+  * Local Host Access    : https://localhost:5173
+  * Wi-Fi / LAN Network  : https://{local_ip}:5173
+  * Node Express Backend : http://localhost:5000 (Internal)
+  * FastAPI AI Proctoring: http://localhost:8000 (Internal)
+======================================================================
+  [MULTI-DEVICE WI-FI INSTRUCTIONS]
+  1. Ensure student devices (laptops, phones) are on the SAME Wi-Fi.
+  2. On each candidate's browser, open:
+     {BOLD}{GREEN}https://{local_ip}:5173{RESET}
+  3. When the browser warns "Your connection is not private":
+     Click {BOLD}Advanced{RESET} -> {BOLD}Proceed to {local_ip} (unsafe){RESET}.
+     (This grants camera/microphone permissions natively on local Wi-Fi!)
+  4. Multiple candidates can register and take exams simultaneously!
 ======================================================================
 """)
 
@@ -115,11 +143,12 @@ def main():
     time.sleep(2)
 
     # 3. Start Vite React Frontend
-    print(">>> Launching React Frontend on port 5173...")
+    print(">>> Launching React Frontend on port 5173 (HTTPS on 0.0.0.0)...")
     start_service(["npm", "run", "dev"], CLIENT_DIR, "FRONTEND", GREEN)
 
     print("\n[OK] All 3 services are running!")
-    print("Open your browser at: http://localhost:5173")
+    print(f"Host machine URL : https://localhost:5173")
+    print(f"Wi-Fi student URL: https://{local_ip}:5173")
     print("Press Ctrl+C at any time to cleanly stop all services.\n")
 
     try:

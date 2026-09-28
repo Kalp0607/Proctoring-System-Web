@@ -19,6 +19,9 @@ exports.ingestAIViolation = async (req, res) => {
 
     let submission = await Submission.findOne({ testId: test._id, studentId });
     if (!submission) {
+      submission = await Submission.findOne({ testId: test._id, registrationId: studentId });
+    }
+    if (!submission) {
       // Fallback: try finding by user _id if studentId was passed as string or registration
       submission = await Submission.findOne({ testId: test._id }).sort({ createdAt: -1 });
     }
@@ -83,7 +86,10 @@ exports.ingestAISessionSummary = async (req, res) => {
       return res.status(404).json({ message: 'Test not found' });
     }
 
-    const submission = await Submission.findOne({ testId: test._id, studentId });
+    let submission = await Submission.findOne({ testId: test._id, studentId });
+    if (!submission) {
+      submission = await Submission.findOne({ testId: test._id, registrationId: studentId });
+    }
     if (!submission) {
       return res.status(404).json({ message: 'Submission not found' });
     }

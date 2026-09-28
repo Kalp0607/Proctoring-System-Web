@@ -92,17 +92,17 @@ export const api = {
     return await res.blob();
   },
 
-  // AI Proctoring Service (FastAPI on http://localhost:8000)
+  // AI Proctoring Service (proxied via /api/ai to FastAPI engine on port 8000)
   aiHealth: async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/ai/health');
+      const res = await fetch('/api/ai/health');
       return await res.json();
     } catch (_) {
       return { status: 'offline' };
     }
   },
   aiVerifyPhoto: async (payload) => {
-    const res = await fetch('http://localhost:8000/api/ai/verify-photo', {
+    const res = await fetch('/api/ai/verify-photo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -110,30 +110,45 @@ export const api = {
     return await res.json();
   },
   aiStartSession: async (payload) => {
-    const res = await fetch('http://localhost:8000/api/ai/start-session', {
+    const res = await fetch('/api/ai/start-session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     return await res.json();
   },
-  aiStopSession: async () => {
+  aiProcessFrame: async (payload) => {
     try {
-      const res = await fetch('http://localhost:8000/api/ai/stop-session', {
+      const res = await fetch('/api/ai/process-frame', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await res.json();
+    } catch (_) {
+      return { success: false };
+    }
+  },
+  aiStopSession: async (payload = {}) => {
+    try {
+      const res = await fetch('/api/ai/stop-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
       return await res.json();
     } catch (_) {
       return { success: true };
     }
   },
-  aiGetStatus: async () => {
+  aiGetStatus: async (testId, studentId) => {
     try {
-      const res = await fetch('http://localhost:8000/api/ai/status');
+      const query = testId && studentId ? `?testId=${encodeURIComponent(testId)}&studentId=${encodeURIComponent(studentId)}` : '';
+      const res = await fetch(`/api/ai/status${query}`);
       return await res.json();
     } catch (_) {
       return { active: false, telemetry: null, events: [] };
     }
   },
 };
+

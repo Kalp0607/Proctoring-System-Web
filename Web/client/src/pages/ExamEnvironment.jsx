@@ -203,6 +203,11 @@ export default function ExamEnvironment() {
   const [aiTelemetry, setAiTelemetry] = useState(null);
   const lastAiEventCountRef = useRef(0);
 
+  // Local camera stream for multi-device Wi-Fi proctoring
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [cameraActive, setCameraActive] = useState(false);
+
   // Submit confirmation modal
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -213,6 +218,43 @@ export default function ExamEnvironment() {
   const hasLoadedRef = useRef(false);
   const violationLockedRef = useRef(false);
   const textareaRef = useRef(null);
+
+  const startExamCamera = async () => {
+    try {
+      if (streamRef.current && streamRef.current.active) {
+        setCameraActive(true);
+        if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+          videoRef.current.play().catch(() => {});
+        }
+        return;
+      }
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+          audio: false,
+        });
+        streamRef.current = stream;
+        setCameraActive(true);
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn('Exam camera access check:', err.message);
+      setCameraActive(false);
+    }
+  };
+
+  useEffect(() => {
+    if (cameraActive && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+      }
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraActive]);
 
   useEffect(() => {
     initExam();
@@ -350,14 +392,34 @@ export default function ExamEnvironment() {
     return () => clearInterval(interval);
   }, [examData]);
 
-  // AI Proctoring Telemetry Polling & Real-time Alerts Listener
+  // Stream periodic frame snapshots to AI Proctoring engine and receive real-time telemetry
   useEffect(() => {
-    if (!hasLoadedRef.current || autoSubmitting) return;
+    if (!hasLoadedRef.current || autoSubmitting || !examData) return;
 
-    const pollAiStatus = async () => {
+    startExamCamera();
+
+    const candidateId = examData?.registration?._id || examData?.userId;
+    const currentTestId = examData?.test?.testId;
+
+    const streamFrameWorker = async () => {
+      const vid = videoRef.current;
+      if (!vid || vid.videoWidth === 0 || !candidateId || !currentTestId) return;
+
       try {
-        const res = await api.aiGetStatus();
-        if (res.active) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 480;
+        canvas.height = 360;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(vid, 0, 0, 480, 360);
+        const liveFrameBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
+        const res = await api.aiProcessFrame({
+          testId: currentTestId,
+          studentId: candidateId,
+          liveFrameBase64,
+        });
+
+        if (res && res.success && res.telemetry) {
           setAiProctorActive(true);
           setAiTelemetry(res.telemetry);
 
@@ -367,8 +429,6 @@ export default function ExamEnvironment() {
             const latestEv = newEvents[newEvents.length - 1];
 
             setViolationsCount((prev) => prev + newEvents.length);
-
-            // Short, concise React Toast pop-up without technical telemetry/coordinates
             const friendlyWarning = formatFriendlyWarning(latestEv);
             showToast(friendlyWarning, 'warning');
           }
@@ -376,16 +436,23 @@ export default function ExamEnvironment() {
       } catch (_) {}
     };
 
-    const interval = setInterval(pollAiStatus, 2000);
+    // Send frame snapshot every 1.8 seconds for real-time proctoring
+    const interval = setInterval(streamFrameWorker, 1800);
     return () => clearInterval(interval);
-  }, [loading, autoSubmitting]);
+  }, [loading, autoSubmitting, examData]);
 
-  // Clean shutdown of AI Proctoring session on unmount
+  // Clean shutdown of AI Proctoring session & camera tracks on unmount
   useEffect(() => {
     return () => {
-      api.aiStopSession().catch(() => {});
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (examData) {
+        const candidateId = examData?.registration?._id || examData?.userId;
+        api.aiStopSession({ testId: examData?.test?.testId, studentId: candidateId }).catch(() => {});
+      }
     };
-  }, []);
+  }, [examData]);
 
   // Anti-cheating listeners: tab switch and fullscreen exit
   useEffect(() => {
@@ -1969,19 +2036,18 @@ export default function ExamEnvironment() {
                   marginBottom: 10,
                 }}
               >
-                {aiProctorActive && !aiFeedError ? (
-                  <img
-                    key={aiFeedRetry}
-                    src={`http://localhost:8000/api/ai/video-feed?retry=${aiFeedRetry}`}
-                    alt="AI Monitor"
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    onLoad={() => setAiFeedError(false)}
-                    onError={() => {
-                      setAiFeedError(true);
-                      setTimeout(() => {
-                        setAiFeedRetry((prev) => prev + 1);
-                        setAiFeedError(false);
-                      }, 2500);
+                {cameraActive ? (
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      display: 'block',
+                      transform: 'scaleX(-1)',
                     }}
                   />
                 ) : (
@@ -2010,28 +2076,23 @@ export default function ExamEnvironment() {
                         animation: 'spin 1s linear infinite',
                       }}
                     />
-                    <span>{aiFeedError ? 'Connecting camera feed...' : 'AI Camera Standby / Initializing'}</span>
-                    {aiFeedError && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAiFeedError(false);
-                          setAiFeedRetry((r) => r + 1);
-                        }}
-                        style={{
-                          marginTop: 4,
-                          padding: '2px 8px',
-                          borderRadius: 4,
-                          background: 'rgba(59, 130, 246, 0.2)',
-                          border: '1px solid rgba(59, 130, 246, 0.5)',
-                          color: '#38bdf8',
-                          fontSize: 10,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Reconnect Stream
-                      </button>
-                    )}
+                    <span>Connecting camera feed...</span>
+                    <button
+                      type="button"
+                      onClick={() => startExamCamera()}
+                      style={{
+                        marginTop: 4,
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        background: 'rgba(59, 130, 246, 0.2)',
+                        border: '1px solid rgba(59, 130, 246, 0.5)',
+                        color: '#38bdf8',
+                        fontSize: 10,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Enable Camera
+                    </button>
                   </div>
                 )}
                 {/* Live Gaze tag */}
