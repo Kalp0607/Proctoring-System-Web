@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -44,6 +45,14 @@ class FaceVerifier(BaseDetector):
         self.insight_app = None
         self.yunet_detector = None
         self.sface_recognizer = None
+
+        # Thread-safe persistent worker infrastructure (bounded latest-frame buffer)
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._pending_frame: Optional[np.ndarray] = None
+        self._stop_event = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
+        self._latest_result: Optional[DetectorResult] = None
 
         self._initialize_models()
 
@@ -131,42 +140,110 @@ class FaceVerifier(BaseDetector):
 
         return False
 
+    def start_worker(self) -> "FaceVerifier":
+        """Start persistent background FaceVerifier worker thread."""
+        with self._lock:
+            if self._worker_thread is None or not self._worker_thread.is_alive():
+                self._stop_event.clear()
+                self._worker_thread = threading.Thread(
+                    target=self._worker_loop,
+                    name="PersistentFaceVerifierWorker",
+                    daemon=True
+                )
+                self._worker_thread.start()
+                logger.info("Persistent FaceVerifier worker thread started.")
+        return self
+
+    def stop_worker(self, timeout: float = 2.0):
+        """Cleanly terminate the persistent background worker thread."""
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=timeout)
+            logger.info("Persistent FaceVerifier worker thread stopped.")
+
+    def submit_frame(self, frame: np.ndarray):
+        """
+        Thread-safe, non-blocking frame submission to bounded 1-frame buffer.
+        Overwrites any unconsumed older frame to eliminate lag and stale buildup.
+        """
+        if frame is None or frame.size == 0 or self._stop_event.is_set():
+            return
+        with self._condition:
+            self._pending_frame = frame
+            self._condition.notify()
+
+    def get_latest_result(self) -> Optional[DetectorResult]:
+        """Thread-safe retrieval of latest face verification result."""
+        with self._lock:
+            return self._latest_result
+
+    def _worker_loop(self):
+        """Persistent worker loop pulling freshest frames and executing face verification."""
+        while not self._stop_event.is_set():
+            with self._condition:
+                while self._pending_frame is None and not self._stop_event.is_set():
+                    self._condition.wait(timeout=0.1)
+                if self._stop_event.is_set():
+                    break
+                frame = self._pending_frame
+                self._pending_frame = None
+
+            if frame is not None:
+                try:
+                    res = self.process(frame)
+                    with self._lock:
+                        self._latest_result = res
+                except Exception as e:
+                    logger.error(f"Error in persistent FaceVerifier worker loop: {e}", exc_info=True)
+
     def process(self, frame: np.ndarray) -> DetectorResult:
         """
         Processes a live video frame and compares detected face against enrolled reference.
         """
         if not self.is_enrolled or self.reference_embedding is None:
-            return DetectorResult(
+            res = DetectorResult(
                 detector_name=self.detector_name,
                 state=config.STATE_FACE_MISSING,
                 message="Error: Student reference image is not enrolled yet."
             )
+            with self._lock:
+                self._latest_result = res
+            return res
 
         if frame is None or frame.size == 0:
-            return DetectorResult(
+            res = DetectorResult(
                 detector_name=self.detector_name,
                 state=config.STATE_FACE_MISSING,
                 message="Received empty video frame."
             )
+            with self._lock:
+                self._latest_result = res
+            return res
 
         try:
             if self.engine_type == "insightface":
-                return self._process_insightface(frame)
+                res = self._process_insightface(frame)
             elif self.engine_type == "opencv_sface":
-                return self._process_opencv_fallback(frame)
+                res = self._process_opencv_fallback(frame)
             else:
-                return DetectorResult(
+                res = DetectorResult(
                     detector_name=self.detector_name,
                     state=config.STATE_FACE_MISSING,
                     message="No active inference engine."
                 )
         except Exception as e:
             logger.error(f"Inference error during face verification: {e}")
-            return DetectorResult(
+            res = DetectorResult(
                 detector_name=self.detector_name,
                 state=config.STATE_FACE_MISSING,
                 message=f"Inference error: {str(e)}"
             )
+
+        with self._lock:
+            self._latest_result = res
+        return res
 
     def _process_insightface(self, frame: np.ndarray) -> DetectorResult:
         faces = self.insight_app.get(frame)

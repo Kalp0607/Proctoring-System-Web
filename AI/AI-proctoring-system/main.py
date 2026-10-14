@@ -151,6 +151,7 @@ def main():
         logger.info("Initializing Face Verification Engine & enrolling reference...")
         fv = FaceVerifier(similarity_threshold=config.FACE_SIMILARITY_THRESHOLD)
         fv.enroll_reference(str(reference_path))
+        fv.start_worker()
         return fv
 
     def init_yolo():
@@ -249,8 +250,6 @@ def main():
     last_audio_result = None
 
     # Asynchronous non-blocking worker states
-    is_face_running = False
-    is_head_running = False
     is_diarization_running = False
     last_diarization_launch = 0.0
 
@@ -300,18 +299,13 @@ def main():
                 frame_count = 0
                 start_time = now
 
-            # A. Run Face Verification AI every Nth frame
-            if (total_frames % config.FRAME_SKIP == 0 or last_face_result is None) and not is_face_running:
-                is_face_running = True
-                def run_face(f):
-                    nonlocal last_face_result, is_face_running
-                    try:
-                        last_face_result = face_verifier.process(f)
-                    except Exception as e:
-                        logger.error(f"Face verification inference error: {e}")
-                    finally:
-                        is_face_running = False
-                threading.Thread(target=run_face, args=(frame.copy(),), daemon=True).start()
+            # A. Run Face Verification AI via persistent worker (bounded latest-frame buffer)
+            if total_frames % config.FRAME_SKIP == 0 or last_face_result is None:
+                face_verifier.submit_frame(frame)
+
+            latest_face = face_verifier.get_latest_result()
+            if latest_face is not None:
+                last_face_result = latest_face
 
             # B. Run Unified Shared YOLO Inference via persistent worker (bounded latest-frame buffer)
             if total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None:
@@ -327,19 +321,13 @@ def main():
                 else:
                     object_detector._phone_warned = False
 
-            # C. Run Stage 4 3D Head Pose Estimation every Kth frame
-            if (total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None) and not is_head_running:
-                is_head_running = True
-                def run_head(f, tg_marks):
-                    nonlocal last_head_result, is_head_running
-                    try:
-                        last_head_result = head_pose_detector.process(f, target_landmarks=tg_marks)
-                    except Exception as e:
-                        logger.error(f"Head pose estimation error: {e}")
-                    finally:
-                        is_head_running = False
+            # C. Run Stage 4 3D Head Pose Estimation synchronously (solvePnP runs in <0.1ms; avoids thread spawn overhead and frame copies)
+            if total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None:
                 tg = last_face_result.landmarks if (last_face_result and last_face_result.face_detected) else None
-                threading.Thread(target=run_head, args=(frame.copy(), tg), daemon=True).start()
+                try:
+                    last_head_result = head_pose_detector.process(frame, target_landmarks=tg)
+                except Exception as e:
+                    logger.error(f"Head pose estimation error: {e}")
 
             # D. Run Periodic Non-Blocking Speaker Diarization Worker
             if now - last_diarization_launch >= config.DIARIZATION_INTERVAL_SECONDS and not is_diarization_running:
@@ -406,6 +394,8 @@ def main():
         logger.critical(f"Fatal error during main execution loop: {e}", exc_info=True)
     finally:
         logger.info("Cleaning up resources...")
+        if 'face_verifier' in locals() and face_verifier:
+            face_verifier.stop_worker()
         if 'object_detector' in locals() and object_detector:
             object_detector.stop_worker()
         if 'audio_manager' in locals() and audio_manager:

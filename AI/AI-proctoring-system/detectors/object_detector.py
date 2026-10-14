@@ -46,7 +46,7 @@ class ObjectDetector(BaseDetector):
 
             # Temporal windows
             "phone_window":    phone_cfg.get("temporal_window",   8),
-            "phone_min_pos":   phone_cfg.get("min_positive_frames", 3),
+            "phone_min_pos":   phone_cfg.get("min_positive_frames", 1),
             "book_window":     6,
             "book_min_pos":    2,
 

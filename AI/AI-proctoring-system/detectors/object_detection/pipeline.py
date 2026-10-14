@@ -127,7 +127,7 @@ class SimpleTracker:
 class TemporalWindow:
     """Tracks positive/negative detections over a rolling window."""
 
-    def __init__(self, window: int = 8, min_positives: int = 3):
+    def __init__(self, window: int = 8, min_positives: int = 1):
         self.window = deque(maxlen=window)
         self.min_positives = min_positives
         self.confirmed = False
@@ -175,7 +175,7 @@ class ObjectDetectionPipeline:
         phone_conf        : float  (default 0.20)
         book_conf         : float  (default 0.35)
         phone_window      : int    (default 8)
-        phone_min_pos     : int    (default 3)
+        phone_min_pos     : int    (default 1)
         book_window       : int    (default 6)
         book_min_pos      : int    (default 2)
         imgsz             : int    (default 640)

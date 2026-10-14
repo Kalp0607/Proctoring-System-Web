@@ -278,9 +278,6 @@ def proctoring_loop():
     last_head_result = None
     last_audio_result = None
 
-    is_face_running = False
-    is_yolo_running = False
-    is_head_running = False
     is_diarization_running = False
     last_diarization_launch = 0.0
 
@@ -326,37 +323,27 @@ def proctoring_loop():
             frame_count = 0
             start_time = now
 
-        # 1. Face Verification AI
-        if (total_frames % config.FRAME_SKIP == 0 or last_face_result is None) and not is_face_running:
-            is_face_running = True
-            def run_face(f):
-                nonlocal last_face_result, is_face_running
-                try:
-                    last_face_result = session.face_verifier.process(f)
-                except Exception as e:
-                    logger.error(f"Face verification inference error: {e}")
-                finally:
-                    is_face_running = False
-            threading.Thread(target=run_face, args=(frame.copy(),), daemon=True).start()
+        # 1. Face Verification AI via persistent worker (bounded latest-frame buffer)
+        if total_frames % config.FRAME_SKIP == 0 or last_face_result is None:
+            if session.face_verifier:
+                session.face_verifier.submit_frame(frame)
+        if session.face_verifier:
+            latest_face = session.face_verifier.get_latest_result()
+            if latest_face is not None:
+                last_face_result = latest_face
 
         # 2. YOLO Object Detection via persistent worker (bounded latest-frame buffer)
         if total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None:
             session.object_detector.submit_frame(frame)
         last_obj_results = session.object_detector.get_latest_results()
 
-        # 3. 3D Head Pose Estimation
-        if (total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None) and not is_head_running:
-            is_head_running = True
-            def run_head(f, tg_marks):
-                nonlocal last_head_result, is_head_running
-                try:
-                    last_head_result = session.head_pose_detector.process(f, target_landmarks=tg_marks)
-                except Exception as e:
-                    logger.error(f"Head pose estimation error: {e}")
-                finally:
-                    is_head_running = False
+        # 3. 3D Head Pose Estimation (synchronous: solvePnP takes <0.1ms; avoids thread spawn overhead and frame copies)
+        if (total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None) and session.head_pose_detector:
             tg = last_face_result.landmarks if (last_face_result and last_face_result.face_detected) else None
-            threading.Thread(target=run_head, args=(frame.copy(), tg), daemon=True).start()
+            try:
+                last_head_result = session.head_pose_detector.process(frame, target_landmarks=tg)
+            except Exception as e:
+                logger.error(f"Head pose estimation error: {e}")
 
         # 4. Periodic Speaker Diarization
         if now - last_diarization_launch >= config.DIARIZATION_INTERVAL_SECONDS and not is_diarization_running:
@@ -567,6 +554,10 @@ def start_proctoring_session(req: StartSessionRequest, background_tasks: Backgro
                 session.worker_thread.join(timeout=2.0)
             if session.camera:
                 session.camera.stop()
+            if session.face_verifier:
+                session.face_verifier.stop_worker()
+            if session.object_detector:
+                session.object_detector.stop_worker()
             if session.audio_manager:
                 session.audio_manager.stop()
 
@@ -591,6 +582,7 @@ def start_proctoring_session(req: StartSessionRequest, background_tasks: Backgro
                 logger.info(f"Student enrolled successfully from: {ref_path}")
             else:
                 logger.warning("Starting session without reference face enrollment (Face presence only).")
+            session.face_verifier.start_worker()
         except Exception as e:
             logger.warning(f"Face verification enrollment warning: {e}. Running with face-presence mode.")
 
@@ -662,6 +654,10 @@ def stop_proctoring_session():
         if session.camera:
             session.camera.stop()
             session.camera = None
+
+        if session.face_verifier:
+            session.face_verifier.stop_worker()
+            session.face_verifier = None
 
         if session.object_detector:
             session.object_detector.stop_worker()

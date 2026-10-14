@@ -59,10 +59,14 @@ class ProctoringUI:
             if config.SHOW_DIAGNOSTICS:
                 annotated_frame = self._draw_diagnostics(annotated_frame, face_result, obj_results, head_result)
 
-            if annotated_frame.shape[:2] != (self.height, self.main_width):
+            # Avoid redundant software resize if frame dimensions already match target canvas
+            fh, fw = annotated_frame.shape[:2]
+            if (fw, fh) != (self.main_width, self.height):
                 resized_display = cv2.resize(annotated_frame, (self.main_width, self.height))
             else:
                 resized_display = annotated_frame
+
+            disp_h, disp_w = resized_display.shape[:2]
             
             # A. Display Persistent Active Violation Banners across top of video feed
             active_violations = violation_mgr.get_active_violations()
@@ -90,7 +94,7 @@ class ProctoringUI:
                     viol_msg = f"VIOLATION: {vtype}"
 
                 txt_sz, _ = cv2.getTextSize(viol_msg, self.font, 0.82, 2)
-                cx = (self.main_width - txt_sz[0]) // 2
+                cx = (disp_w - txt_sz[0]) // 2
 
                 # High-contrast bold Red box with White border
                 pad_x = 24
@@ -124,7 +128,7 @@ class ProctoringUI:
             if not active_violations and head_result and head_result.raw_data and not head_result.raw_data.get("calibrated", True):
                 calib_msg = "Calibrating baseline... Please look naturally at center of screen"
                 txt_sz, _ = cv2.getTextSize(calib_msg, self.font, 0.65, 2)
-                cx = (self.main_width - txt_sz[0]) // 2
+                cx = (disp_w - txt_sz[0]) // 2
                 cv2.rectangle(resized_display, (cx - 18, 14), (cx + txt_sz[0] + 18, 52), (50, 40, 25), -1)
                 cv2.rectangle(resized_display, (cx - 18, 14), (cx + txt_sz[0] + 18, 52), (0, 210, 255), 2)
                 cv2.putText(resized_display, calib_msg, (cx, 40), self.font, 0.65, (0, 230, 255), 2)
@@ -155,7 +159,7 @@ class ProctoringUI:
                 for popup in self.active_popups:
                     text = popup["message"]
                     txt_sz, _ = cv2.getTextSize(text, self.font, 0.8, 2)
-                    cx = (self.main_width - txt_sz[0]) // 2
+                    cx = (disp_w - txt_sz[0]) // 2
                     
                     # Draw background box (Red with White border)
                     cv2.rectangle(resized_display, (cx - 15, y_offset - 30), (cx + txt_sz[0] + 15, y_offset + 10), (46, 30, 200), -1)

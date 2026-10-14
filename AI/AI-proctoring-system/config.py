@@ -67,7 +67,7 @@ PHONE_DETECTION_CONFIG = {
 
     # Temporal Aggregation & State Machine
     "temporal_window": 8,               # Rolling frame window size
-    "min_positive_frames": 4,           # Required positive frames within window to confirm violation
+    "min_positive_frames": 1,           # 1 hit for immediate detection and screenshot
     "cooldown_seconds": 3.0,            # Cooldown duration after violation resolution
 
     # Lightweight Multi-Frame Tracking
@@ -161,7 +161,7 @@ PERSON_DETECTION_INTERVAL = OBJECT_DETECTION_INTERVAL
 
 # Continuous temporal confirmation thresholds (in seconds)
 MULTIPLE_PERSON_CONFIRM_SECONDS = 2.0
-PHONE_CONFIRM_SECONDS = 0.1          # Instant confirmation on phone detection (instant popup banner & screenshot)
+PHONE_CONFIRM_SECONDS = 0.0          # Immediate confirmation on phone detection (immediate popup banner & screenshot on hit 1)
 BOOK_CONFIRM_SECONDS = 1.5
 
 # Stage 3.5 Rolling Window Temporal Ratio Smoothing Parameters
@@ -276,8 +276,8 @@ FRAME_SKIP = 3  # Run AI face detection every Nth frame (fast landmark updates)
 
 # --- UI & Visual Settings ---
 SHOW_DIAGNOSTICS = False  # Disabled by default: clean camera feed for exam. Press 'd' anytime to toggle diagnostic mode.
-UI_CANVAS_WIDTH = int(DETECTED_DISPLAY_INFO.get("width_px", 1920))
-UI_CANVAS_HEIGHT = int(DETECTED_DISPLAY_INFO.get("height_px", 1080))
+UI_CANVAS_WIDTH = WEBCAM_WIDTH    # 1280 (Native capture resolution; OpenCV window manager handles fullscreen scaling)
+UI_CANVAS_HEIGHT = WEBCAM_HEIGHT  # 720
 UI_SIDE_PANEL_WIDTH = 380
 
 # State Names
