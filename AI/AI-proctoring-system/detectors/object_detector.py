@@ -6,6 +6,7 @@ into the standard DetectorResult dict that main.py and violation_manager expect.
 """
 
 import logging
+import threading
 from typing import Dict, Optional
 import numpy as np
 
@@ -25,11 +26,15 @@ class ObjectDetector(BaseDetector):
     def __init__(self,
                  model_name: str = None,
                  img_size: int = None,
-                 device: str = None):
+                 device: str = None,
+                 num_threads: int = None,
+                 use_onnx: bool = None):
 
-        model_name = model_name or getattr(config, "YOLO_MODEL", "yolo11s.pt")
-        img_size   = img_size   or getattr(config, "YOLO_IMAGE_SIZE", 640)
-        device     = device     or getattr(config, "DEVICE", "cpu")
+        model_name  = model_name  or getattr(config, "YOLO_MODEL", "yolo11n.onnx")
+        img_size    = img_size    or getattr(config, "YOLO_IMAGE_SIZE", 640)
+        device      = device      or getattr(config, "DEVICE", "cpu")
+        num_threads = num_threads or getattr(config, "YOLO_NUM_THREADS", 4)
+        use_onnx    = use_onnx if use_onnx is not None else getattr(config, "YOLO_USE_ONNX", True)
 
         phone_cfg  = getattr(config, "PHONE_DETECTION_CONFIG", {})
 
@@ -48,6 +53,8 @@ class ObjectDetector(BaseDetector):
             # Inference settings
             "imgsz":           img_size,
             "device":          device,
+            "num_threads":     num_threads,
+            "use_onnx":        use_onnx,
 
             # Geometry filters
             "min_person_area": getattr(config, "MIN_PERSON_BOX_AREA", 0.02),
@@ -59,7 +66,117 @@ class ObjectDetector(BaseDetector):
             config=pipeline_config
         )
         self.detector_name = "ObjectDetector"
-        logger.info("ObjectDetector (clean YOLO11 pipeline) initialized successfully.")
+
+        # Thread-safe persistent worker infrastructure (bounded latest-frame buffer)
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._pending_frame: Optional[np.ndarray] = None
+        self._stop_event = threading.Event()
+        self._is_ready = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
+        self._latest_results: Dict[str, DetectorResult] = self._get_empty_results()
+
+        logger.info(f"ObjectDetector initialized successfully (backend: {'ONNX Runtime' if getattr(self.pipeline, 'is_onnx', False) else 'PyTorch'}).")
+
+    def _get_empty_results(self) -> Dict[str, DetectorResult]:
+        """Returns standard default empty detection results with NORMAL states."""
+        return {
+            "person":     DetectorResult(detector_name="PersonDetector",
+                                         state=config.STATE_NORMAL, message="No person detected"),
+            "cell_phone": DetectorResult(detector_name="PhoneDetector",
+                                         state=config.STATE_NORMAL, message="No phone detected"),
+            "book":       DetectorResult(detector_name="BookDetector",
+                                         state=config.STATE_NORMAL, message="No book detected"),
+        }
+
+    def start_worker(self) -> "ObjectDetector":
+        """Start the persistent background YOLO inference worker thread."""
+        with self._lock:
+            if self._worker_thread is None or not self._worker_thread.is_alive():
+                self._stop_event.clear()
+                self._worker_thread = threading.Thread(
+                    target=self._worker_loop,
+                    name="PersistentYoloWorker",
+                    daemon=True
+                )
+                self._worker_thread.start()
+                logger.info("Persistent YOLO worker thread started.")
+        return self
+
+    def stop_worker(self, timeout: float = 2.0):
+        """Cleanly terminate the persistent background worker thread."""
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=timeout)
+            logger.info("Persistent YOLO worker thread stopped.")
+
+    def submit_frame(self, frame: np.ndarray):
+        """
+        Thread-safe, non-blocking frame submission to bounded 1-frame buffer.
+        Overwrites any unconsumed older frame to eliminate lag and stale buildup.
+        """
+        if frame is None or frame.size == 0 or self._stop_event.is_set():
+            return
+        with self._condition:
+            self._pending_frame = frame
+            self._condition.notify()
+
+    def get_latest_results(self) -> Dict[str, DetectorResult]:
+        """Thread-safe retrieval of latest inference results."""
+        with self._lock:
+            return self._latest_results
+
+    def is_ready(self) -> bool:
+        """Returns True if detector has completed pre-warming/initialization."""
+        return self._is_ready.is_set()
+
+    def wait_until_ready(self, timeout: float = 10.0) -> bool:
+        """Wait until background warmup completes."""
+        return self._is_ready.wait(timeout=timeout)
+
+    def warmup(self, dummy_frame: Optional[np.ndarray] = None):
+        """Synchronously pre-warm the detector."""
+        if dummy_frame is None:
+            h = getattr(config, "WEBCAM_HEIGHT", 720)
+            w = getattr(config, "WEBCAM_WIDTH", 1280)
+            dummy_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        try:
+            self.process(dummy_frame)
+            logger.info("YOLO ObjectDetector warmup completed successfully.")
+        except Exception as e:
+            logger.warning(f"ObjectDetector warmup warning: {e}")
+        finally:
+            self._is_ready.set()
+
+    def start_background_warmup(self, dummy_frame: Optional[np.ndarray] = None):
+        """Launch warmup asynchronously in background without blocking caller."""
+        threading.Thread(
+            target=self.warmup,
+            args=(dummy_frame,),
+            name="YoloWarmupWorker",
+            daemon=True
+        ).start()
+
+    def _worker_loop(self):
+        """Persistent worker loop pulling freshest frames and executing inference."""
+        while not self._stop_event.is_set():
+            with self._condition:
+                while self._pending_frame is None and not self._stop_event.is_set():
+                    self._condition.wait(timeout=0.1)
+                if self._stop_event.is_set():
+                    break
+                frame = self._pending_frame
+                self._pending_frame = None
+
+            if frame is not None:
+                try:
+                    res = self.process(frame)
+                    with self._lock:
+                        self._latest_results = res
+                except Exception as e:
+                    logger.error(f"Error in persistent YOLO worker loop: {e}", exc_info=True)
 
     def process(self, frame: np.ndarray) -> Dict[str, DetectorResult]:
         """
@@ -70,14 +187,7 @@ class ObjectDetector(BaseDetector):
             "book":       DetectorResult
         }
         """
-        empty = {
-            "person":     DetectorResult(detector_name="PersonDetector",
-                                         state=config.STATE_NORMAL, message="No person detected"),
-            "cell_phone": DetectorResult(detector_name="PhoneDetector",
-                                         state=config.STATE_NORMAL, message="No phone detected"),
-            "book":       DetectorResult(detector_name="BookDetector",
-                                         state=config.STATE_NORMAL, message="No book detected"),
-        }
+        empty = self._get_empty_results()
 
         if frame is None or frame.size == 0:
             return empty
@@ -234,8 +344,13 @@ class ObjectDetector(BaseDetector):
             }
         )
 
-        return {
+        results = {
             "person":     person_res,
             "cell_phone": phone_res,
             "book":       book_res
         }
+        with self._lock:
+            self._latest_results = results
+        self._is_ready.set()
+
+        return results

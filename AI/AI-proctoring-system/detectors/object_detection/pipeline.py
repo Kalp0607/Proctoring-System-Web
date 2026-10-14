@@ -15,9 +15,9 @@ from collections import deque
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import cv2
-
-import torch
-torch.set_num_threads(2)  # Prevent CPU thrashing when multiple AI models run concurrently
+import os
+import ast
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,21 @@ def _iou(a: Tuple, b: Tuple) -> float:
     inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
     union = aw * ah + bw * bh - inter
     return inter / union if union > 0 else 0.0
+
+
+# ─── Simple Letterbox helper ────────────────────────────────────────────────
+def _letterbox(im: np.ndarray, new_shape: Tuple[int, int] = (640, 640),
+               color: Tuple[int, int, int] = (114, 114, 114)) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+    """Standard YOLO letterbox resizing preserving aspect ratio with padding."""
+    shape = im.shape[:2]  # [height, width]
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = (new_shape[1] - new_unpad[0]) / 2, (new_shape[0] - new_unpad[1]) / 2
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    im_resized = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    im_padded = cv2.copyMakeBorder(im_resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+    return im_padded, r, (dw, dh)
 
 
 # ─── Simple NMS ──────────────────────────────────────────────────────────────
@@ -170,7 +185,6 @@ class ObjectDetectionPipeline:
     """
 
     def __init__(self, yolo_model_path: str, config: Dict[str, Any] = None):
-        from ultralytics import YOLO
         cfg = config or {}
 
         self.person_conf     = cfg.get("person_conf",     0.45)
@@ -178,6 +192,8 @@ class ObjectDetectionPipeline:
         self.book_conf       = cfg.get("book_conf",       0.35)
         self.imgsz           = cfg.get("imgsz",           640)
         self.device          = cfg.get("device",          "cpu")
+        self.num_threads     = cfg.get("num_threads",     4)
+        self.use_onnx        = cfg.get("use_onnx",        True)
         self.min_person_area = cfg.get("min_person_area", 0.02)
         self.max_phone_area  = cfg.get("max_phone_area",  0.50)
 
@@ -186,7 +202,6 @@ class ObjectDetectionPipeline:
         book_window   = cfg.get("book_window",   6)
         book_min_pos  = cfg.get("book_min_pos",  2)
 
-        self.model = YOLO(yolo_model_path)
         self.person_tracker = SimpleTracker(iou_thresh=0.40, max_age=15)
         self.phone_tracker  = SimpleTracker(iou_thresh=0.30, max_age=8)
         self.book_tracker   = SimpleTracker(iou_thresh=0.35, max_age=6)
@@ -194,10 +209,130 @@ class ObjectDetectionPipeline:
         self.book_temporal  = TemporalWindow(window=book_window,  min_positives=book_min_pos)
 
         self._frame_id = 0
-        logger.info(f"ObjectDetectionPipeline ready: model={yolo_model_path}, device={self.device}")
+        self.is_onnx = False
+        self.session = None
+        self.input_name = None
+        self.model = None
+
+        # Standard COCO class names fallback
+        self.class_names = {
+            CLS_PERSON: "person",
+            CLS_REMOTE: "remote",
+            CLS_CELL_PHONE: "cell phone",
+            CLS_BOOK: "book"
+        }
+
+        # Resolve model path & runtime engine
+        resolved_path = Path(yolo_model_path)
+        onnx_candidate = resolved_path if resolved_path.suffix.lower() == ".onnx" else resolved_path.with_suffix(".onnx")
+
+        if self.use_onnx:
+            # 1. Attempt loading ONNX Runtime model
+            if not onnx_candidate.exists() and resolved_path.exists() and resolved_path.suffix.lower() == ".pt":
+                logger.info(f"ONNX model '{onnx_candidate}' not found. Exporting from '{resolved_path}'...")
+                try:
+                    from ultralytics import YOLO
+                    pt_temp = YOLO(str(resolved_path))
+                    pt_temp.export(format="onnx", imgsz=self.imgsz, dynamic=False, opset=12)
+                    logger.info(f"Successfully auto-exported ONNX model to '{onnx_candidate}'.")
+                except Exception as exp_err:
+                    logger.warning(f"Auto-export to ONNX failed: {exp_err}. Will fallback to PyTorch.")
+
+            if onnx_candidate.exists():
+                try:
+                    import onnxruntime as ort
+                    sess_opts = ort.SessionOptions()
+                    sess_opts.intra_op_num_threads = self.num_threads
+                    sess_opts.inter_op_num_threads = 1
+                    sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    self.session = ort.InferenceSession(str(onnx_candidate), sess_options=sess_opts, providers=["CPUExecutionProvider"])
+                    self.input_name = self.session.get_inputs()[0].name
+                    self.is_onnx = True
+
+                    # Try extracting metadata class names from ONNX model
+                    try:
+                        meta_names = self.session.get_modelmeta().custom_metadata_map.get("names")
+                        if meta_names:
+                            parsed_names = ast.literal_eval(meta_names)
+                            if isinstance(parsed_names, dict):
+                                self.class_names.update(parsed_names)
+                    except Exception:
+                        pass
+
+                    logger.info(f"ObjectDetectionPipeline initialized using ONNX Runtime ({onnx_candidate}) on CPUExecutionProvider with {self.num_threads} threads.")
+                except Exception as ort_err:
+                    logger.warning(f"Failed to load ONNX Runtime session: {ort_err}. Falling back to PyTorch.")
+                    self.is_onnx = False
+
+        if not self.is_onnx:
+            # 2. PyTorch fallback with configurable threads (lazy import)
+            import torch
+            torch.set_num_threads(self.num_threads)
+            from ultralytics import YOLO
+            self.model = YOLO(str(resolved_path))
+            if hasattr(self.model, "names") and isinstance(self.model.names, dict):
+                self.class_names.update(self.model.names)
+            logger.info(f"ObjectDetectionPipeline initialized using PyTorch ({resolved_path}) with {self.num_threads} threads.")
 
     def _run_yolo(self, frame: np.ndarray, classes: List[int], conf: float) -> List[Dict]:
-        """Run YOLO11 inference and return [{bbox, confidence, class_id, class_name}]."""
+        """Run YOLO inference via ONNX Runtime or PyTorch."""
+        if self.is_onnx and self.session is not None:
+            return self._run_onnx(frame, classes, conf)
+        return self._run_pytorch(frame, classes, conf)
+
+    def _run_onnx(self, frame: np.ndarray, classes: List[int], conf: float) -> List[Dict]:
+        """High-performance ONNX Runtime inference with letterboxing, coordinate unscaling, and NMS."""
+        orig_h, orig_w = frame.shape[:2]
+        lb_img, ratio, (dw, dh) = _letterbox(frame, (self.imgsz, self.imgsz))
+        blob = lb_img[..., ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0
+        blob = np.expand_dims(blob, axis=0)
+
+        out = self.session.run(None, {self.input_name: blob})[0]
+        preds = out[0].T  # Shape: [8400, 84]
+        boxes = preds[:, :4]
+        scores = preds[:, 4:]
+
+        detections = []
+        for cls_id in classes:
+            if cls_id >= scores.shape[1]:
+                continue
+            cls_scores = scores[:, cls_id]
+            mask = cls_scores >= conf
+            if not np.any(mask):
+                continue
+            c_boxes = boxes[mask]
+            c_scores = cls_scores[mask]
+
+            x1 = (c_boxes[:, 0] - c_boxes[:, 2] / 2.0 - dw) / ratio
+            y1 = (c_boxes[:, 1] - c_boxes[:, 3] / 2.0 - dh) / ratio
+            x2 = (c_boxes[:, 0] + c_boxes[:, 2] / 2.0 - dw) / ratio
+            y2 = (c_boxes[:, 1] + c_boxes[:, 3] / 2.0 - dh) / ratio
+
+            x1 = np.clip(x1, 0, orig_w)
+            y1 = np.clip(y1, 0, orig_h)
+            x2 = np.clip(x2, 0, orig_w)
+            y2 = np.clip(y2, 0, orig_h)
+
+            nms_boxes = [[float(x), float(y), float(x2[i] - x), float(y2[i] - y)] for i, (x, y) in enumerate(zip(x1, y1))]
+            nms_scores = [float(s) for s in c_scores]
+            indices = cv2.dnn.NMSBoxes(nms_boxes, nms_scores, score_threshold=conf, nms_threshold=0.45)
+            if len(indices) > 0:
+                for idx in indices.flatten():
+                    bx = int(round(x1[idx]))
+                    by = int(round(y1[idx]))
+                    bw = int(round(x2[idx] - x1[idx]))
+                    bh = int(round(y2[idx] - y1[idx]))
+                    detections.append({
+                        "bbox": (bx, by, bw, bh),
+                        "confidence": round(float(c_scores[idx]), 3),
+                        "class_id": cls_id,
+                        "class_name": self.class_names.get(cls_id, str(cls_id)),
+                        "source": "yolo11"
+                    })
+        return detections
+
+    def _run_pytorch(self, frame: np.ndarray, classes: List[int], conf: float) -> List[Dict]:
+        """Fallback PyTorch inference."""
         results = self.model.predict(
             source=frame,
             conf=conf,
@@ -209,7 +344,7 @@ class ObjectDetectionPipeline:
         detections = []
         if results and results[0].boxes is not None:
             boxes = results[0].boxes
-            names = self.model.names
+            names = self.model.names if hasattr(self.model, "names") else self.class_names
             for box in boxes:
                 cls_id = int(box.cls[0].cpu().numpy())
                 c      = float(box.conf[0].cpu().numpy())

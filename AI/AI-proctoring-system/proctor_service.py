@@ -339,18 +339,10 @@ def proctoring_loop():
                     is_face_running = False
             threading.Thread(target=run_face, args=(frame.copy(),), daemon=True).start()
 
-        # 2. YOLO Object Detection
-        if (total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None) and not is_yolo_running:
-            is_yolo_running = True
-            def run_yolo(f):
-                nonlocal last_obj_results, is_yolo_running
-                try:
-                    last_obj_results = session.object_detector.process(f)
-                except Exception as e:
-                    logger.error(f"Object detection inference error: {e}")
-                finally:
-                    is_yolo_running = False
-            threading.Thread(target=run_yolo, args=(frame.copy(),), daemon=True).start()
+        # 2. YOLO Object Detection via persistent worker (bounded latest-frame buffer)
+        if total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None:
+            session.object_detector.submit_frame(frame)
+        last_obj_results = session.object_detector.get_latest_results()
 
         # 3. 3D Head Pose Estimation
         if (total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None) and not is_head_running:
@@ -602,9 +594,11 @@ def start_proctoring_session(req: StartSessionRequest, background_tasks: Backgro
         except Exception as e:
             logger.warning(f"Face verification enrollment warning: {e}. Running with face-presence mode.")
 
-        # 2. Initialize Object Detector (YOLOv11)
+        # 2. Initialize Object Detector (YOLOv11 ONNX)
         try:
             session.object_detector = ObjectDetector(model_name=config.YOLO_MODEL, img_size=config.YOLO_IMAGE_SIZE)
+            session.object_detector.start_worker()
+            session.object_detector.start_background_warmup()
         except Exception as e:
             logger.error(f"Failed to load ObjectDetector: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to load YOLO model: {e}")
@@ -668,6 +662,10 @@ def stop_proctoring_session():
         if session.camera:
             session.camera.stop()
             session.camera = None
+
+        if session.object_detector:
+            session.object_detector.stop_worker()
+            session.object_detector = None
 
         if session.audio_manager:
             session.audio_manager.stop()

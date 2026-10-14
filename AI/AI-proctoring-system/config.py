@@ -34,8 +34,15 @@ IDENTITY_MISMATCH_THRESHOLD_SEC = 3.0
 
 # --- Stage 2, 3, & 3.5 Object Detector Thresholds ---
 # Ultralytics YOLO model selection — base COCO model for person, book, remote detection
-# YOLOv11n: PyTorch checkpoint
-YOLO_MODEL = "yolo11n.pt"
+# Default to ONNX Runtime model (yolo11n.onnx) for fast, low-latency CPU inference
+YOLO_ONNX_MODEL = "yolo11n.onnx"
+YOLO_PT_MODEL = "yolo11n.pt"
+YOLO_MODEL = os.environ.get(
+    "YOLO_MODEL",
+    YOLO_ONNX_MODEL if (BASE_DIR / YOLO_ONNX_MODEL).exists() else YOLO_PT_MODEL
+)
+YOLO_USE_ONNX = os.environ.get("YOLO_USE_ONNX", "true").lower() in ("true", "1", "yes")
+YOLO_NUM_THREADS = int(os.environ.get("YOLO_NUM_THREADS", "4"))
 
 # Backend & Service Integration Config
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:5000/api/proctoring")

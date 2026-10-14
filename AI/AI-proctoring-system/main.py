@@ -5,6 +5,7 @@ import os
 import logging
 import argparse
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from pathlib import Path
 
@@ -142,57 +143,98 @@ def main():
         if not ensure_reference_image(reference_path, camera_index=args.camera, create_sample=args.create_sample):
             sys.exit(1)
 
-    # 2. Initialize Face Verification Engine & Enroll Student
-    try:
-        face_verifier = FaceVerifier(similarity_threshold=config.FACE_SIMILARITY_THRESHOLD)
-        face_verifier.enroll_reference(str(reference_path))
-    except (FileNotFoundError, ValueError) as e:
-        logger.critical(f"Enrollment Failed: {e}")
-        sys.exit(1)
-    except Exception as e:
-        logger.critical(f"Unexpected error during face model initialization / enrollment: {e}")
-        sys.exit(1)
+    # 2. Concurrently Initialize Independent Components
+    logger.info("Initializing proctoring pipeline components concurrently...")
+    init_start = time.perf_counter()
 
-    # 3. Initialize Unified Stage 3 YOLO Object Detector
-    try:
-        logger.info(f"Loading Stage 3 Unified YOLO Object Detector ({config.YOLO_MODEL})...")
-        object_detector = ObjectDetector(
+    def init_face():
+        logger.info("Initializing Face Verification Engine & enrolling reference...")
+        fv = FaceVerifier(similarity_threshold=config.FACE_SIMILARITY_THRESHOLD)
+        fv.enroll_reference(str(reference_path))
+        return fv
+
+    def init_yolo():
+        logger.info(f"Initializing Stage 3 Unified YOLO Detector ({config.YOLO_MODEL})...")
+        obj_det = ObjectDetector(
             model_name=config.YOLO_MODEL,
             img_size=config.YOLO_IMAGE_SIZE,
             device=config.DEVICE
         )
-        # Pre-warm YOLO on startup to avoid first-frame latency spike
-        logger.info("Pre-warming YOLO Object Detector...")
-        dummy_f = np.zeros((config.WEBCAM_HEIGHT, config.WEBCAM_WIDTH, 3), dtype=np.uint8)
-        object_detector.process(dummy_f)
-    except Exception as e:
-        logger.critical(f"Failed to load Stage 3 Object Detector: {e}")
-        sys.exit(1)
+        obj_det.start_worker()
+        obj_det.start_background_warmup()
+        return obj_det
 
+    def init_head():
+        logger.info("Initializing Stage 4 3D Head Pose Estimator...")
+        hp = HeadPoseDetector()
+        hp.start_calibration(config.HEAD_POSE_CALIBRATION_SECONDS)
+        return hp
 
-    # 4. Initialize Stage 4 3D Head Pose Detector & Start Baseline Calibration
-    try:
-        logger.info("Initializing Stage 4 3D Head Pose Estimator (solvePnP)...")
-        head_pose_detector = HeadPoseDetector()
-        head_pose_detector.start_calibration(config.HEAD_POSE_CALIBRATION_SECONDS)
-    except Exception as e:
-        logger.critical(f"Failed to load Head Pose Detector: {e}")
-        sys.exit(1)
+    def init_audio():
+        logger.info("Initializing Stage 5 Live Microphone Audio & Speaker Diarizer...")
+        am = AudioManager(buffer_duration=config.DIARIZATION_WINDOW_SECONDS)
+        am.start()
+        sd = SpeakerDetector()
+        return am, sd
 
-    # 5. Initialize Stage 5 Live Microphone Audio Manager & Speaker Diarizer
-    audio_manager = AudioManager(buffer_duration=config.DIARIZATION_WINDOW_SECONDS)
-    audio_started = audio_manager.start()
-    speaker_detector = SpeakerDetector()
+    def init_cam():
+        logger.info(f"Initializing Camera device {args.camera} ({config.WEBCAM_WIDTH}x{config.WEBCAM_HEIGHT})...")
+        cam = CameraManager(camera_index=args.camera, width=config.WEBCAM_WIDTH, height=config.WEBCAM_HEIGHT)
+        if not cam.start():
+            raise RuntimeError(f"Webcam initialization failed for device index {args.camera}")
+        return cam
 
-    # 6. Initialize Camera, Violation Manager, & UI
-    camera = CameraManager(camera_index=args.camera, width=config.WEBCAM_WIDTH, height=config.WEBCAM_HEIGHT)
-    if not camera.start():
-        logger.critical(f"Webcam initialization failed for device index {args.camera}. Exiting.")
-        sys.exit(1)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        fut_face = executor.submit(init_face)
+        fut_yolo = executor.submit(init_yolo)
+        fut_head = executor.submit(init_head)
+        fut_audio = executor.submit(init_audio)
+        fut_cam = executor.submit(init_cam)
+
+        try:
+            face_verifier = fut_face.result()
+        except (FileNotFoundError, ValueError) as e:
+            logger.critical(f"Enrollment Failed: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.critical(f"Unexpected error during face model initialization / enrollment: {e}")
+            sys.exit(1)
+
+        try:
+            object_detector = fut_yolo.result()
+        except Exception as e:
+            logger.critical(f"Failed to load Stage 3 Object Detector: {e}")
+            sys.exit(1)
+
+        try:
+            head_pose_detector = fut_head.result()
+        except Exception as e:
+            logger.critical(f"Failed to load Head Pose Detector: {e}")
+            sys.exit(1)
+
+        try:
+            audio_manager, speaker_detector = fut_audio.result()
+        except Exception as e:
+            logger.critical(f"Failed to load Audio Manager: {e}")
+            sys.exit(1)
+
+        try:
+            camera = fut_cam.result()
+        except Exception as e:
+            logger.critical(f"{e}")
+            sys.exit(1)
 
     violation_logger = ViolationLogger()
     violation_mgr = ViolationManager(logger_instance=violation_logger)
     ui_renderer = ProctoringUI()
+
+    init_duration = time.perf_counter() - init_start
+    logger.info(f"All components initialized concurrently in {init_duration:.2f}s.")
+
+    # Guard: Ensure mandatory YOLO detector completes pre-warm before exam evaluation starts
+    if not object_detector.is_ready():
+        logger.info("Finalizing YOLO background pre-warm...")
+        object_detector.wait_until_ready(timeout=5.0)
 
     logger.info("Starting live proctoring session (All Stages 1–5 Active). Press 'Q' to exit, 'C' to recalibrate.")
 
@@ -208,7 +250,6 @@ def main():
 
     # Asynchronous non-blocking worker states
     is_face_running = False
-    is_yolo_running = False
     is_head_running = False
     is_diarization_running = False
     last_diarization_launch = 0.0
@@ -272,22 +313,19 @@ def main():
                         is_face_running = False
                 threading.Thread(target=run_face, args=(frame.copy(),), daemon=True).start()
 
-            # B. Run Unified Shared YOLO Inference every Mth frame
-            if (total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None) and not is_yolo_running:
-                is_yolo_running = True
-                def run_yolo(f):
-                    nonlocal last_obj_results, is_yolo_running
-                    try:
-                        res = object_detector.process(f)
-                        last_obj_results = res
-                        ph = res.get("cell_phone")
-                        if ph and ph.state == config.STATE_PHONE_DETECTED:
-                            logger.warning(f"Phone detected in camera frame (Conf: {ph.similarity_score:.2f})")
-                    except Exception as e:
-                        logger.error(f"Object detection inference error: {e}")
-                    finally:
-                        is_yolo_running = False
-                threading.Thread(target=run_yolo, args=(frame.copy(),), daemon=True).start()
+            # B. Run Unified Shared YOLO Inference via persistent worker (bounded latest-frame buffer)
+            if total_frames % config.OBJECT_DETECTION_INTERVAL == 0 or last_obj_results is None:
+                object_detector.submit_frame(frame)
+
+            last_obj_results = object_detector.get_latest_results()
+            if last_obj_results:
+                ph = last_obj_results.get("cell_phone")
+                if ph and ph.state == config.STATE_PHONE_DETECTED:
+                    if not getattr(object_detector, "_phone_warned", False):
+                        logger.warning(f"Phone detected in camera frame (Conf: {ph.similarity_score:.2f})")
+                        object_detector._phone_warned = True
+                else:
+                    object_detector._phone_warned = False
 
             # C. Run Stage 4 3D Head Pose Estimation every Kth frame
             if (total_frames % config.HEAD_POSE_PROCESS_INTERVAL == 0 or last_head_result is None) and not is_head_running:
@@ -368,10 +406,15 @@ def main():
         logger.critical(f"Fatal error during main execution loop: {e}", exc_info=True)
     finally:
         logger.info("Cleaning up resources...")
-        audio_manager.stop()
-        camera.stop()
+        if 'object_detector' in locals() and object_detector:
+            object_detector.stop_worker()
+        if 'audio_manager' in locals() and audio_manager:
+            audio_manager.stop()
+        if 'camera' in locals() and camera:
+            camera.stop()
         cv2.destroyAllWindows()
-        violation_mgr.print_post_test_logs()
+        if 'violation_mgr' in locals() and violation_mgr:
+            violation_mgr.print_post_test_logs()
         logger.info("Session closed successfully.")
 
 
