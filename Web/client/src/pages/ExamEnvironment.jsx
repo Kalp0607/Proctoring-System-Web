@@ -196,6 +196,8 @@ export default function ExamEnvironment() {
 
   // AI Proctoring Engine state
   const [aiProctorActive, setAiProctorActive] = useState(false);
+  const [aiFeedError, setAiFeedError] = useState(false);
+  const [aiFeedRetry, setAiFeedRetry] = useState(0);
   const [showAiHud, setShowAiHud] = useState(true);
   const [aiHudMinimized, setAiHudMinimized] = useState(false);
   const [aiTelemetry, setAiTelemetry] = useState(null);
@@ -295,18 +297,16 @@ export default function ExamEnvironment() {
       setViolationsCount(totalBrowserViolations);
 
       // Connect and initialize Multimodal AI Proctoring Service
-      if (data.registration?.photoUrl) {
-        try {
-          await api.aiStartSession({
-            testId: data.test.testId,
-            studentId: data.registration._id || session.userId,
-            studentName: data.registration.formData?.name || 'Candidate',
-            photoUrl: data.registration.photoUrl,
-          });
-          setAiProctorActive(true);
-        } catch (aiErr) {
-          console.warn('AI Proctoring service initialization notice:', aiErr.message);
-        }
+      try {
+        await api.aiStartSession({
+          testId: data.test.testId,
+          studentId: data.registration?._id || session.userId,
+          studentName: data.registration?.formData?.name || 'Candidate',
+          photoUrl: data.registration?.photoUrl || '',
+        });
+        setAiProctorActive(true);
+      } catch (aiErr) {
+        console.warn('AI Proctoring service initialization notice:', aiErr.message);
       }
 
       // Prompt fullscreen
@@ -1964,32 +1964,74 @@ export default function ExamEnvironment() {
                   height: 140,
                   borderRadius: 8,
                   overflow: 'hidden',
-                  background: '#020617',
+                  background: '#090d16',
                   border: '1px solid #1e293b',
                   marginBottom: 10,
                 }}
               >
-                {aiProctorActive ? (
+                {aiProctorActive && !aiFeedError ? (
                   <img
-                    src="http://localhost:8000/api/ai/video-feed"
+                    key={aiFeedRetry}
+                    src={`http://localhost:8000/api/ai/video-feed?retry=${aiFeedRetry}`}
                     alt="AI Monitor"
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    onError={(e) => {
-                      e.target.style.display = 'none';
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    onLoad={() => setAiFeedError(false)}
+                    onError={() => {
+                      setAiFeedError(true);
+                      setTimeout(() => {
+                        setAiFeedRetry((prev) => prev + 1);
+                        setAiFeedError(false);
+                      }, 2500);
                     }}
                   />
                 ) : (
                   <div
                     style={{
                       display: 'flex',
+                      flexDirection: 'column',
                       alignItems: 'center',
                       justifyContent: 'center',
                       height: '100%',
-                      color: '#64748b',
+                      background: 'radial-gradient(circle at center, #111827 0%, #030712 100%)',
+                      color: '#94a3b8',
                       fontSize: 11,
+                      gap: 8,
+                      padding: 10,
+                      textAlign: 'center',
                     }}
                   >
-                    AI Monitor Standby
+                    <div
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: '50%',
+                        border: '2px solid rgba(59, 130, 246, 0.3)',
+                        borderTopColor: '#38bdf8',
+                        animation: 'spin 1s linear infinite',
+                      }}
+                    />
+                    <span>{aiFeedError ? 'Connecting camera feed...' : 'AI Camera Standby / Initializing'}</span>
+                    {aiFeedError && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiFeedError(false);
+                          setAiFeedRetry((r) => r + 1);
+                        }}
+                        style={{
+                          marginTop: 4,
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          background: 'rgba(59, 130, 246, 0.2)',
+                          border: '1px solid rgba(59, 130, 246, 0.5)',
+                          color: '#38bdf8',
+                          fontSize: 10,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Reconnect Stream
+                      </button>
+                    )}
                   </div>
                 )}
                 {/* Live Gaze tag */}

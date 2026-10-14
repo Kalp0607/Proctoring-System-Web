@@ -15,6 +15,7 @@ const violationItemSchema = new mongoose.Schema({
       'MULTIPLE_SPEAKERS',
       'FACE_MISSING',
       'IDENTITY_MISMATCH',
+      'FACE_MISMATCH',
       'OTHER',
     ],
     required: true,

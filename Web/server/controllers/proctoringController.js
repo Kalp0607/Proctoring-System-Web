@@ -27,20 +27,23 @@ exports.ingestAIViolation = async (req, res) => {
     }
 
     let screenshotUrl = '';
-    if (req.file) {
-      screenshotUrl = `/uploads/${req.file.filename}`;
-    } else if (req.body.screenshotUrl) {
-      screenshotUrl = req.body.screenshotUrl;
+    // Looking Away is the only exception: do not attach any screenshot
+    if (type !== 'LOOKING_AWAY') {
+      if (req.file) {
+        screenshotUrl = `/uploads/${req.file.filename}`;
+      } else if (req.body.screenshotUrl) {
+        screenshotUrl = req.body.screenshotUrl;
+      }
     }
 
-    const highRiskTypes = ['PHONE_DETECTED', 'MULTIPLE_PEOPLE', 'IDENTITY_MISMATCH', 'MULTIPLE_SPEAKERS'];
+    const highRiskTypes = ['PHONE_DETECTED', 'MULTIPLE_PEOPLE', 'IDENTITY_MISMATCH', 'FACE_MISMATCH', 'MULTIPLE_SPEAKERS'];
 
     const violation = {
       id: `ai_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
       type,
-      message: message || `AI detected: ${type}`,
+      message: message || (type === 'IDENTITY_MISMATCH' || type === 'FACE_MISMATCH' ? 'Face Mismatch violation detected' : `AI detected: ${type}`),
       timestamp: new Date(),
-      screenshotUrl,
+      screenshotUrl: type === 'LOOKING_AWAY' ? '' : screenshotUrl,
       durationSeconds: Number(duration_seconds) || 0,
       severity: highRiskTypes.includes(type) ? 'critical' : 'warning',
     };

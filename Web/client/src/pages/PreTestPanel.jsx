@@ -33,6 +33,7 @@ export default function PreTestPanel() {
   const [isVerifyingFace, setIsVerifyingFace] = useState(false);
 
   const videoRef = useRef(null);
+  const streamRef = useRef(null);
 
   useEffect(() => {
     fetchExam();
@@ -49,10 +50,22 @@ export default function PreTestPanel() {
   };
 
   const stopCameraPreview = () => {
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((track) => {
+          track.enabled = false;
+          track.stop();
+        });
+      } catch (_) {}
+      streamRef.current = null;
+    }
     if (videoRef.current && videoRef.current.srcObject) {
       try {
         const stream = videoRef.current.srcObject;
-        stream.getTracks().forEach((track) => track.stop());
+        stream.getTracks().forEach((track) => {
+          track.enabled = false;
+          track.stop();
+        });
         videoRef.current.srcObject = null;
       } catch (_) {}
     }
@@ -63,6 +76,51 @@ export default function PreTestPanel() {
       stopCameraPreview();
     };
   }, []);
+
+  const startCamera = async (showAlert = false) => {
+    try {
+      if (streamRef.current && streamRef.current.active) {
+        setCameraPermission(true);
+        if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+          videoRef.current.play().catch(() => {});
+        }
+        return;
+      }
+
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        streamRef.current = stream;
+        setCameraPermission(true);
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    } catch (err) {
+      if (showAlert) {
+        alert('Camera access check: ' + err.message);
+      }
+      setCameraPermission(false);
+    }
+  };
+
+  // Automatically start camera preview when user is on the screen
+  useEffect(() => {
+    if (!loading && !error) {
+      startCamera(false);
+    }
+  }, [loading, error]);
+
+  // Ensure stream is attached to video element when permission state changes
+  useEffect(() => {
+    if (cameraPermission && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+      }
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraPermission]);
 
   const handleAiFaceCheck = async () => {
     if (!examData?.registration?.photoUrl) return;
@@ -147,17 +205,8 @@ export default function PreTestPanel() {
     }
   };
 
-  const testCameraPreview = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
-      setCameraPermission(true);
-    } catch (err) {
-      alert('Camera access check: ' + err.message);
-    }
+  const testCameraPreview = () => {
+    startCamera(true);
   };
 
   const formatCountdown = (totalSec) => {
@@ -177,9 +226,13 @@ export default function PreTestPanel() {
       if (!document.fullscreenElement) {
         await document.documentElement.requestFullscreen();
       }
-      navigate(`/exam/take/${testId}`);
+      setTimeout(() => {
+        navigate(`/exam/take/${testId}`);
+      }, 300);
     } catch (e) {
-      navigate(`/exam/take/${testId}`);
+      setTimeout(() => {
+        navigate(`/exam/take/${testId}`);
+      }, 300);
     }
   };
 
@@ -383,7 +436,18 @@ export default function PreTestPanel() {
 
                 {cameraPermission && (
                   <div className="camera-preview-box" style={{ marginTop: 8, height: 130 }}>
-                    <video ref={videoRef} autoPlay playsInline muted />
+                    <video
+                      ref={(el) => {
+                        videoRef.current = el;
+                        if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                          el.srcObject = streamRef.current;
+                          el.play().catch(() => {});
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                    />
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
