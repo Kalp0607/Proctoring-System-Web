@@ -1,5 +1,69 @@
 const API_BASE = '/api';
 
+export function getAiBaseUrl() {
+  if (typeof window !== 'undefined') {
+    if (window.location.protocol === 'https:') {
+      return '/ai-api';
+    }
+    if (window.location.hostname) {
+      return `http://${window.location.hostname}:8000/api/ai`;
+    }
+  }
+  return 'http://localhost:8000/api/ai';
+}
+
+async function aiRequest(endpoint, options = {}, timeoutMs = 2500) {
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  // Under HTTPS, prioritize the local proxy to prevent Mixed-Content blocks
+  const primaryUrl = isHttps ? `/ai-api${endpoint}` : `${getAiBaseUrl()}${endpoint}`;
+  const proxyUrl = isHttps ? `${getAiBaseUrl()}${endpoint}` : `/ai-api${endpoint}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const fetchOptions = {
+    ...options,
+    signal: options.signal || controller.signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  };
+
+  try {
+    const res = await fetch(primaryUrl, fetchOptions);
+    clearTimeout(timer);
+    if (res.ok) return await res.json();
+    const data = await res.json().catch(() => ({}));
+    const err = new Error(data.message || `AI service returned ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  } catch (primaryErr) {
+    clearTimeout(timer);
+    if (controller.signal.aborted) {
+      throw new Error(`AI request ${endpoint} timed out after ${timeoutMs}ms`);
+    }
+    // If direct connection failed, fallback to Vite /ai-api proxy with 1.5s timeout
+    try {
+      const fbController = new AbortController();
+      const fbTimer = setTimeout(() => fbController.abort(), 1500);
+      const proxyRes = await fetch(proxyUrl, {
+        ...fetchOptions,
+        signal: fbController.signal,
+      });
+      clearTimeout(fbTimer);
+      if (proxyRes.ok) return await proxyRes.json();
+      const pData = await proxyRes.json().catch(() => ({}));
+      const pErr = new Error(pData.message || `AI proxy returned ${proxyRes.status}`);
+      pErr.status = proxyRes.status;
+      throw pErr;
+    } catch (_) {
+      throw primaryErr;
+    }
+  }
+}
+
 export async function request(endpoint, options = {}) {
   const token = localStorage.getItem('token');
   const headers = {
@@ -48,6 +112,9 @@ export const api = {
   login: (body) => request('/auth/login', { method: 'POST', body: JSON.stringify(body) }),
   getMe: () => request('/auth/me'),
 
+  // Network info for Wi-Fi sharing
+  getNetworkInfo: () => request('/network-info'),
+
   // Examiner Tests
   createTest: (body) => request('/tests', { method: 'POST', body: JSON.stringify(body) }),
   getExaminerTests: () => request('/tests/examiner'),
@@ -92,46 +159,54 @@ export const api = {
     return await res.blob();
   },
 
-  // AI Proctoring Service (FastAPI on http://localhost:8000)
+  // Multimodal AI Proctoring Engine (FastAPI)
   aiHealth: async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/ai/health');
-      return await res.json();
+      return await aiRequest('/health');
     } catch (_) {
       return { status: 'offline' };
     }
   },
+
   aiVerifyPhoto: async (payload) => {
-    const res = await fetch('http://localhost:8000/api/ai/verify-photo', {
+    return await aiRequest('/verify-photo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return await res.json();
   },
+
   aiStartSession: async (payload) => {
-    const res = await fetch('http://localhost:8000/api/ai/start-session', {
+    return await aiRequest('/start-session', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return await res.json();
   },
-  aiStopSession: async () => {
+
+  aiSendFrame: async (payload) => {
+    return await aiRequest('/session/frame', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  aiStopSession: async (payload = {}) => {
     try {
-      const res = await fetch('http://localhost:8000/api/ai/stop-session', {
+      return await aiRequest('/stop-session', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
-      return await res.json();
     } catch (_) {
       return { success: true };
     }
   },
-  aiGetStatus: async () => {
+
+  aiGetStatus: async (params = {}) => {
     try {
-      const res = await fetch('http://localhost:8000/api/ai/status');
-      return await res.json();
+      const q = new URLSearchParams();
+      if (params.testId) q.append('testId', params.testId);
+      if (params.studentId) q.append('studentId', params.studentId);
+      const queryStr = q.toString() ? `?${q.toString()}` : '';
+      return await aiRequest(`/status${queryStr}`);
     } catch (_) {
       return { active: false, telemetry: null, events: [] };
     }

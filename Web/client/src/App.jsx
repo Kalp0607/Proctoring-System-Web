@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
@@ -28,6 +28,18 @@ function HomeRedirect() {
 
 function AppContent() {
   const [enterModalOpen, setEnterModalOpen] = useState(false);
+
+  // Auto-upgrade to HTTPS if accessing via Wi-Fi IP on plain HTTP so webcam API is available
+  useEffect(() => {
+    if (
+      typeof window !== 'undefined' &&
+      window.location.protocol === 'http:' &&
+      window.location.hostname !== 'localhost' &&
+      window.location.hostname !== '127.0.0.1'
+    ) {
+      window.location.href = window.location.href.replace('http:', 'https:');
+    }
+  }, []);
 
   return (
     <div className="app-container">

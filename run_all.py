@@ -1,17 +1,21 @@
 """
 AI Online Examination & Multimodal AI Proctoring System
 Unified Full-Stack Runner (Node Backend + Vite Client + FastAPI AI Proctoring Engine)
+Supports Simultaneous Multi-Student Examinations over Local Wi-Fi Network
 """
 
 import os
 import sys
 import time
 import signal
+import socket
 import subprocess
 import threading
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
+if (ROOT_DIR / "Proctoring-System-Web").exists():
+    ROOT_DIR = ROOT_DIR / "Proctoring-System-Web"
 SERVER_DIR = ROOT_DIR / "Web" / "server"
 CLIENT_DIR = ROOT_DIR / "Web" / "client"
 AI_DIR = ROOT_DIR / "AI" / "AI-proctoring-system"
@@ -27,6 +31,21 @@ RESET = "\033[0m"
 
 processes = []
 shutting_down = False
+
+
+def get_local_wifi_ip():
+    """Detects primary local IPv4 address on Wi-Fi/LAN."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "127.0.0.1"
 
 
 def log_stream(proc, prefix, color):
@@ -92,34 +111,47 @@ def main():
     signal.signal(signal.SIGINT, shutdown_all)
     signal.signal(signal.SIGTERM, shutdown_all)
 
+    local_ip = get_local_wifi_ip()
+
     print(f"""
 ======================================================================
-     AI-PROCTORED ONLINE EXAMINATION SYSTEM - FULL APPLICATION
+     AI-PROCTORED ONLINE EXAMINATION SYSTEM - MULTI-STUDENT WI-FI
   MERN Web Platform + Multimodal Computer Vision & Audio AI Engine
 ======================================================================
+  [Host Machine Access]
   * Node Express Backend  : http://localhost:5000
-  * Vite React Frontend   : http://localhost:5173
+  * Vite React Frontend   : https://localhost:5173
   * FastAPI AI Proctoring : http://localhost:8000
+
+  {GREEN}{BOLD}[Local Wi-Fi Network Access for Students & Teacher]{RESET}
+  * Students Exam Portal  : {GREEN}{BOLD}https://{local_ip}:5173{RESET}
+  * Teacher Dashboard     : {GREEN}{BOLD}https://{local_ip}:5173/examiner/dashboard{RESET}
+  * Backend API (LAN)     : http://{local_ip}:5000/api
+  * AI Proctoring (LAN)   : http://{local_ip}:8000/api/ai
+======================================================================
+  Note: When connecting over Wi-Fi via https://, browsers will show a one-time
+  local certificate notice. Click 'Advanced' -> 'Proceed' to enable full camera access.
 ======================================================================
 """)
 
     # 1. Start Node.js Backend Server
-    print(">>> Launching Backend Server on port 5000...")
+    print(">>> Launching Backend Server on port 5000 (0.0.0.0)...")
     start_service(["npm", "run", "dev"], SERVER_DIR, "SERVER", CYAN)
     time.sleep(2)
 
     # 2. Start FastAPI AI Proctoring Service
-    print(">>> Launching Multimodal AI Proctoring Service on port 8000...")
+    print(">>> Launching Multimodal AI Proctoring Service on port 8000 (0.0.0.0)...")
     ai_cmd = [sys.executable, "-m", "uvicorn", "proctor_service:app", "--host", "0.0.0.0", "--port", "8000"]
     start_service(ai_cmd, AI_DIR, "AI-ENGINE", MAGENTA)
     time.sleep(2)
 
     # 3. Start Vite React Frontend
-    print(">>> Launching React Frontend on port 5173...")
+    print(">>> Launching React Frontend on port 5173 (0.0.0.0)...")
     start_service(["npm", "run", "dev"], CLIENT_DIR, "FRONTEND", GREEN)
 
-    print("\n[OK] All 3 services are running!")
-    print("Open your browser at: http://localhost:5173")
+    print(f"\n{GREEN}{BOLD}[OK] All 3 services are active and ready!{RESET}")
+    print(f"Teacher local browser : http://localhost:5173")
+    print(f"Students Wi-Fi link   : {CYAN}{BOLD}http://{local_ip}:5173{RESET}")
     print("Press Ctrl+C at any time to cleanly stop all services.\n")
 
     try:

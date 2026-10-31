@@ -82,17 +82,37 @@ export default function TestRegisterPage() {
   // Webcam methods
   const startWebcam = async () => {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (typeof window !== 'undefined' && window.location.protocol === 'http:') {
+          if (confirm('Webcam access requires a secure HTTPS connection over Wi-Fi. Would you like to switch to HTTPS now?')) {
+            window.location.href = window.location.href.replace('http:', 'https:');
+            return;
+          }
+        }
+        alert('Webcam is not available in this browser context. Please use the "Upload Photo File" tab below to attach your student photo.');
+        return;
+      }
       setWebcamActive(true);
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.play().catch(() => {});
       }
     } catch (err) {
       alert('Could not access webcam: ' + err.message);
       setWebcamActive(false);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (videoRef.current && videoRef.current.srcObject) {
+        try {
+          videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
+        } catch (_) {}
+      }
+    };
+  }, []);
 
   const captureWebcamSnapshot = () => {
     if (!videoRef.current || !canvasRef.current) return;

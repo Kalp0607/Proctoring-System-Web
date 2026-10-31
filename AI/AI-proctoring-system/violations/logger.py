@@ -12,11 +12,22 @@ logger = logging.getLogger(__name__)
 class ViolationLogger:
     """
     Manages structured persistence of proctoring violations to disk (JSON format).
+    Supports per-student isolated logs to guarantee multi-student isolation.
     Ensures safe reading, writing, and recovery from malformed files.
     """
 
-    def __init__(self, log_path: Path = config.VIOLATION_LOG_FILE):
-        self.log_path = Path(log_path)
+    def __init__(self, log_path: Optional[Path] = None, test_id: Optional[str] = None, student_id: Optional[str] = None):
+        if log_path is not None:
+            self.log_path = Path(log_path)
+        elif student_id:
+            clean_test = (test_id or "test").replace("/", "_").replace("\\", "_")
+            clean_stu = str(student_id).replace("/", "_").replace("\\", "_")
+            logs_dir = config.VIOLATIONS_DIR / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            self.log_path = logs_dir / f"{clean_test}_{clean_stu}_violations.json"
+        else:
+            self.log_path = Path(config.VIOLATION_LOG_FILE)
+
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_log_file_exists()
 
@@ -59,40 +70,35 @@ class ViolationLogger:
                     json.dump(records, f, indent=2, ensure_ascii=False)
                 if tmp_path.exists():
                     tmp_path.unlink()
-            except Exception as e2:
-                logger.error(f"Failed to write violation records to disk: {e2}")
+            except Exception as e:
+                logger.error(f"Failed writing violation log: {e}")
 
-    def log_violation(self, violation_data: Dict[str, Any]):
-        """
-        Appends a new violation record to the log file.
-        """
-        records = self.get_all_violations()
-        records.append(violation_data)
+    def log_violation(self, record: Dict[str, Any]):
+        """Appends a new violation record to persistent JSON log."""
+        records = self.get_records()
+        records.append(record)
         self._write_records(records)
-        logger.info(f"Violation logged: {violation_data.get('type')} at {violation_data.get('timestamp')}")
 
-    def update_violation(self, violation_id: str, updates: Dict[str, Any]):
-        """
-        Updates an existing violation record (e.g. adding end_time and duration when episode closes).
-        """
-        records = self.get_all_violations()
-        updated = False
+    def update_violation(self, episode_id: str, updated_fields: Dict[str, Any]):
+        """Updates an existing violation record with duration and close times."""
+        records = self.get_records()
+        found = False
         for rec in records:
-            if rec.get("id") == violation_id:
-                rec.update(updates)
-                updated = True
+            if rec.get("id") == episode_id:
+                rec.update(updated_fields)
+                found = True
                 break
-
-        if updated:
+        if found:
             self._write_records(records)
 
-    def get_all_violations(self) -> List[Dict[str, Any]]:
-        """Reads and returns all logged violations."""
-        if not self.log_path.exists():
-            return []
+    def get_records(self) -> List[Dict[str, Any]]:
+        """Returns all persistent records from disk."""
         try:
             with open(self.log_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception as e:
-            logger.error(f"Error reading violation log: {e}")
+        except Exception:
             return []
+
+    def get_all_violations(self) -> List[Dict[str, Any]]:
+        """Alias for backwards compatibility with ViolationManager."""
+        return self.get_records()

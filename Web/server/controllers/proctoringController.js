@@ -1,5 +1,49 @@
+const mongoose = require('mongoose');
 const Submission = require('../models/Submission');
 const Test = require('../models/Test');
+const Registration = require('../models/Registration');
+
+/**
+ * Accurately finds the submission for a specific student without ever leaking
+ * violations or session data across different students.
+ */
+async function findStudentSubmission(testInternalId, studentIdStr) {
+  if (!studentIdStr) return null;
+
+  // 1. Direct match by studentId (User ObjectId)
+  if (mongoose.Types.ObjectId.isValid(studentIdStr)) {
+    let sub = await Submission.findOne({ testId: testInternalId, studentId: studentIdStr });
+    if (sub) return sub;
+
+    // 2. Try match by registrationId (Registration ObjectId)
+    sub = await Submission.findOne({ testId: testInternalId, registrationId: studentIdStr });
+    if (sub) return sub;
+
+    // 3. Look up Registration doc by _id to resolve its user studentId
+    const reg = await Registration.findById(studentIdStr);
+    if (reg && reg.studentId) {
+      sub = await Submission.findOne({ testId: testInternalId, studentId: reg.studentId });
+      if (sub) return sub;
+    }
+  }
+
+  // 4. Fallback search via registration formData (e.g. roll number or email)
+  const regByTest = await Registration.findOne({
+    testId: testInternalId,
+    $or: [
+      { 'formData.roll_no': studentIdStr },
+      { 'formData.email': studentIdStr },
+      { 'formData.studentId': studentIdStr },
+    ],
+  });
+
+  if (regByTest && regByTest.studentId) {
+    const sub = await Submission.findOne({ testId: testInternalId, studentId: regByTest.studentId });
+    if (sub) return sub;
+  }
+
+  return null;
+}
 
 // @desc    Ingest real-time violation event from AI proctoring system (future-proof)
 // @route   POST /api/proctoring/violation
@@ -17,13 +61,10 @@ exports.ingestAIViolation = async (req, res) => {
       return res.status(404).json({ message: 'Test not found' });
     }
 
-    let submission = await Submission.findOne({ testId: test._id, studentId });
+    const submission = await findStudentSubmission(test._id, studentId);
     if (!submission) {
-      // Fallback: try finding by user _id if studentId was passed as string or registration
-      submission = await Submission.findOne({ testId: test._id }).sort({ createdAt: -1 });
-    }
-    if (!submission) {
-      return res.status(404).json({ message: 'Active exam submission not found' });
+      console.warn(`[Proctoring] Active exam submission not found for studentId: ${studentId} in test: ${testId}`);
+      return res.status(404).json({ message: `Active exam submission not found for student: ${studentId}` });
     }
 
     let screenshotUrl = '';
@@ -62,6 +103,7 @@ exports.ingestAIViolation = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Violation recorded',
+      studentId: submission.studentId,
       currentRiskLevel: submission.proctoring.riskLevel,
       totalViolations: submission.proctoring.violations.length,
     });
@@ -83,13 +125,23 @@ exports.ingestAISessionSummary = async (req, res) => {
       return res.status(404).json({ message: 'Test not found' });
     }
 
-    const submission = await Submission.findOne({ testId: test._id, studentId });
+    const submission = await findStudentSubmission(test._id, studentId);
     if (!submission) {
-      return res.status(404).json({ message: 'Submission not found' });
+      console.warn(`[Proctoring] Submission not found for session summary of student: ${studentId}`);
+      return res.status(404).json({ message: `Submission not found for student: ${studentId}` });
     }
 
     if (['Low', 'Medium', 'High'].includes(riskLevel)) {
-      submission.proctoring.riskLevel = riskLevel;
+      if (submission.proctoring.riskLevel === 'High' && riskLevel !== 'High') {
+        const hasCritical = (submission.proctoring.violations || []).some(
+          (v) => v.severity === 'critical' || ['PHONE_DETECTED', 'MULTIPLE_PEOPLE', 'IDENTITY_MISMATCH', 'FACE_MISMATCH'].includes(v.type)
+        );
+        if (!hasCritical) {
+          submission.proctoring.riskLevel = riskLevel;
+        }
+      } else {
+        submission.proctoring.riskLevel = riskLevel;
+      }
     }
 
     if (notes) {
@@ -101,6 +153,7 @@ exports.ingestAISessionSummary = async (req, res) => {
     res.json({
       success: true,
       message: 'Session summary updated',
+      studentId: submission.studentId,
       riskLevel: submission.proctoring.riskLevel,
     });
   } catch (error) {

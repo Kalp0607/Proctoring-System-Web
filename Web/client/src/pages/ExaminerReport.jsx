@@ -16,6 +16,9 @@ import {
   Users,
   Maximize2,
   EyeOff,
+  Smartphone,
+  BookOpen,
+  Volume2,
 } from 'lucide-react';
 
 const resolveMediaUrl = (url) => {
@@ -28,6 +31,12 @@ const resolveMediaUrl = (url) => {
 
 const getViolationGroups = (violations = []) => {
   let lookingAwayCount = 0;
+  let phoneCount = 0;
+  let multiplePeopleCount = 0;
+  let bookCount = 0;
+  let faceMismatchCount = 0;
+  let multipleVoicesCount = 0;
+  let faceMissingCount = 0;
   const items = [];
 
   violations.forEach((v) => {
@@ -42,6 +51,13 @@ const getViolationGroups = (violations = []) => {
         vtype === 'FACE_MISMATCH' ||
         msg.includes('identity mismatch') ||
         msg.includes('face mismatch');
+
+      if (isFaceMismatch) faceMismatchCount += 1;
+      else if (vtype === 'PHONE_DETECTED' || msg.includes('phone')) phoneCount += 1;
+      else if (vtype === 'MULTIPLE_PEOPLE' || msg.includes('multiple people')) multiplePeopleCount += 1;
+      else if (vtype === 'BOOK_DETECTED' || msg.includes('book')) bookCount += 1;
+      else if (vtype === 'MULTIPLE_SPEAKERS' || msg.includes('voice') || msg.includes('speaker')) multipleVoicesCount += 1;
+      else if (vtype === 'FACE_MISSING' || msg.includes('not visible')) faceMissingCount += 1;
 
       let displayTitle = isFaceMismatch ? 'Face Mismatch' : (v.type || 'Violation');
       if (vtype === 'PHONE_DETECTED') displayTitle = 'Phone Detected';
@@ -63,6 +79,12 @@ const getViolationGroups = (violations = []) => {
 
   return {
     lookingAwayCount,
+    phoneCount,
+    multiplePeopleCount,
+    bookCount,
+    faceMismatchCount,
+    multipleVoicesCount,
+    faceMissingCount,
     lookingAwayText: lookingAwayCount > 0 ? `Looking Away: ${lookingAwayCount} times` : null,
     items,
   };
@@ -354,26 +376,50 @@ export default function ExaminerReport() {
                             <strong>{totalBrowserViolations}</strong> browser alerts (Tab / Fullscreen)
                           </div>
                           {sub.proctoring?.violations && sub.proctoring.violations.length > 0 && (() => {
-                            const { lookingAwayCount, items } = getViolationGroups(sub.proctoring.violations);
-                            const faceMismatches = items.filter((x) => x.isFaceMismatch);
-                            const screenshotsCount = items.filter((x) => x.hasScreenshot).length;
+                            const vg = getViolationGroups(sub.proctoring.violations);
+                            const screenshotsCount = vg.items.filter((x) => x.hasScreenshot).length;
 
                             return (
-                              <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                {lookingAwayCount > 0 && (
-                                  <div style={{ fontSize: 12, fontWeight: 600, color: '#b45309' }}>
-                                    Looking Away: {lookingAwayCount} times
+                              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                {vg.phoneCount > 0 && (
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <Smartphone size={13} />
+                                    <span>Phone Detected: {vg.phoneCount} incident{vg.phoneCount > 1 ? 's' : ''}</span>
                                   </div>
                                 )}
-                                {faceMismatches.length > 0 && (
-                                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                {vg.multiplePeopleCount > 0 && (
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <Users size={13} />
+                                    <span>Multiple People: {vg.multiplePeopleCount} incident{vg.multiplePeopleCount > 1 ? 's' : ''}</span>
+                                  </div>
+                                )}
+                                {vg.faceMismatchCount > 0 && (
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
                                     <Camera size={13} />
-                                    <span>Face Mismatch: {faceMismatches.length} incident{faceMismatches.length > 1 ? 's' : ''} (Screenshot attached)</span>
+                                    <span>Face Mismatch: {vg.faceMismatchCount} incident{vg.faceMismatchCount > 1 ? 's' : ''}</span>
+                                  </div>
+                                )}
+                                {vg.bookCount > 0 && (
+                                  <div style={{ fontSize: 12, fontWeight: 600, color: '#b45309', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <BookOpen size={13} />
+                                    <span>Book / Notes: {vg.bookCount} incident{vg.bookCount > 1 ? 's' : ''}</span>
+                                  </div>
+                                )}
+                                {vg.multipleVoicesCount > 0 && (
+                                  <div style={{ fontSize: 12, fontWeight: 600, color: '#b45309', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <Volume2 size={13} />
+                                    <span>Multiple Voices: {vg.multipleVoicesCount} incident{vg.multipleVoicesCount > 1 ? 's' : ''}</span>
+                                  </div>
+                                )}
+                                {vg.lookingAwayCount > 0 && (
+                                  <div style={{ fontSize: 12, fontWeight: 600, color: '#b45309', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <EyeOff size={13} />
+                                    <span>Looking Away: {vg.lookingAwayCount} times</span>
                                   </div>
                                 )}
                                 {screenshotsCount > 0 && (
                                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                                    {screenshotsCount} violation screenshot{screenshotsCount > 1 ? 's' : ''} attached
+                                    {screenshotsCount} screenshot evidence attached
                                   </div>
                                 )}
                               </div>

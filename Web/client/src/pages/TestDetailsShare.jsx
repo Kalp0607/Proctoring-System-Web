@@ -15,6 +15,8 @@ import {
   Share2,
   AlertCircle,
   ExternalLink,
+  Wifi,
+  Laptop,
 } from 'lucide-react';
 
 export default function TestDetailsShare() {
@@ -22,7 +24,9 @@ export default function TestDetailsShare() {
   const [test, setTest] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [networkInfo, setNetworkInfo] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedWifiLink, setCopiedWifiLink] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
   const [copiedPass, setCopiedPass] = useState(false);
 
@@ -34,13 +38,19 @@ export default function TestDetailsShare() {
     try {
       setLoading(true);
       const res = await api.getPublicDetails(testId);
-      // We also check examiner tests to retrieve the testPassword
+      // Retrieve testPassword from examiner tests
       const examinerTests = await api.getExaminerTests();
       const currentTest = examinerTests.find((t) => t.testId === testId.toUpperCase());
       setTest({
         ...res.test,
         testPassword: currentTest ? currentTest.testPassword : '••••••',
       });
+
+      // Retrieve server Wi-Fi network info
+      try {
+        const net = await api.getNetworkInfo();
+        setNetworkInfo(net);
+      } catch (_) {}
     } catch (err) {
       setError(err.message || 'Failed to fetch test details');
     } finally {
@@ -48,13 +58,18 @@ export default function TestDetailsShare() {
     }
   };
 
-  const testLink = `${window.location.origin}/test/enter/${testId?.toUpperCase()}`;
+  const localTestLink = `${window.location.origin}/test/enter/${testId?.toUpperCase()}`;
+  const wifiHost = networkInfo?.wifiClientUrl || (networkInfo?.localIp ? `https://${networkInfo.localIp}:5173` : '');
+  const wifiTestLink = wifiHost ? `${wifiHost}/test/enter/${testId?.toUpperCase()}` : localTestLink;
 
   const copyToClipboard = (text, type) => {
     navigator.clipboard.writeText(text);
     if (type === 'link') {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
+    } else if (type === 'wifi') {
+      setCopiedWifiLink(true);
+      setTimeout(() => setCopiedWifiLink(false), 2000);
     } else if (type === 'id') {
       setCopiedId(true);
       setTimeout(() => setCopiedId(false), 2000);
@@ -83,16 +98,16 @@ export default function TestDetailsShare() {
   }
 
   return (
-    <div style={{ maxWidth: 840, margin: '0 auto', paddingBottom: 48 }}>
+    <div style={{ maxWidth: 880, margin: '0 auto', paddingBottom: 48 }}>
       <div style={{ marginBottom: 20 }}>
         <Link to="/examiner/dashboard" className="btn btn-secondary btn-sm" style={{ marginBottom: 14 }}>
           <ArrowLeft size={16} /> Back to Dashboard
         </Link>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em' }}>Test Entry & Share Hub</h1>
+            <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em' }}>Test Entry & Wi-Fi Share Hub</h1>
             <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-              Share this entry information or QR code with candidates to register and enter the examination.
+              Share this entry information or QR code with candidates to register and enter the examination simultaneously over Wi-Fi.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
@@ -103,6 +118,27 @@ export default function TestDetailsShare() {
               <FileBarChart size={16} /> Test Report
             </Link>
           </div>
+        </div>
+      </div>
+
+      {/* Wi-Fi Multi-Student Notice Banner */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '14px 18px',
+          background: 'rgba(16, 185, 129, 0.08)',
+          border: '1px solid rgba(16, 185, 129, 0.25)',
+          borderRadius: 8,
+          marginBottom: 20,
+          color: '#10b981',
+          fontSize: 13,
+        }}
+      >
+        <Wifi size={20} />
+        <div>
+          <strong>Multi-Student Wi-Fi Proctoring Active:</strong> Multiple students connected to the same Wi-Fi can take this test simultaneously from their own laptops. Each candidate gets an independent proctored session with isolated violations and telemetry.
         </div>
       </div>
 
@@ -126,11 +162,11 @@ export default function TestDetailsShare() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 240px', gap: 32, alignItems: 'center' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 32, alignItems: 'center' }}>
           {/* Share Credentials Details */}
           <div>
             {/* Test ID */}
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 18 }}>
               <label className="form-label" style={{ fontWeight: 600 }}>
                 Unique Test ID
               </label>
@@ -160,7 +196,7 @@ export default function TestDetailsShare() {
             </div>
 
             {/* Test Password */}
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 18 }}>
               <label className="form-label" style={{ fontWeight: 600 }}>
                 Test Entry Password
               </label>
@@ -189,27 +225,54 @@ export default function TestDetailsShare() {
               <div className="form-hint">Candidates must provide this password to register and enter.</div>
             </div>
 
-            {/* Direct Test Link */}
-            <div>
-              <label className="form-label" style={{ fontWeight: 600 }}>
-                Direct Test Entry Link
+            {/* Wi-Fi Network Test Link for Students */}
+            <div style={{ marginBottom: 18 }}>
+              <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, color: '#10b981' }}>
+                <Wifi size={15} /> Wi-Fi Test Entry Link (For Students on the same network)
               </label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
                   type="text"
                   readOnly
-                  value={testLink}
+                  value={wifiTestLink}
                   className="form-control"
-                  style={{ fontSize: 13, backgroundColor: 'var(--bg-subtle)' }}
+                  style={{ fontSize: 13, backgroundColor: 'var(--bg-subtle)', borderColor: 'rgba(16, 185, 129, 0.4)' }}
                 />
                 <button
                   type="button"
-                  onClick={() => copyToClipboard(testLink, 'link')}
+                  onClick={() => copyToClipboard(wifiTestLink, 'wifi')}
                   className="btn btn-primary"
-                  title="Copy Direct Link"
+                  title="Copy Wi-Fi Network Link"
+                >
+                  {copiedWifiLink ? <Check size={16} /> : <Copy size={16} />}
+                  <span>{copiedWifiLink ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+              <div className="form-hint" style={{ color: '#10b981' }}>
+                Share this IP link so candidates on other devices connected to the Wi-Fi can join.
+              </div>
+            </div>
+
+            {/* Direct Local Link */}
+            <div>
+              <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                <Laptop size={14} /> Local Machine Link (For host laptop only)
+              </label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  readOnly
+                  value={localTestLink}
+                  className="form-control"
+                  style={{ fontSize: 12, backgroundColor: 'var(--bg-subtle)' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(localTestLink, 'link')}
+                  className="btn btn-secondary"
+                  title="Copy Local Link"
                 >
                   {copiedLink ? <Check size={16} /> : <Copy size={16} />}
-                  <span>{copiedLink ? 'Copied' : 'Copy'}</span>
                 </button>
               </div>
             </div>
@@ -228,10 +291,10 @@ export default function TestDetailsShare() {
               backgroundColor: '#ffffff',
             }}
           >
-            <QRCodeSVG value={testLink} size={170} level="H" includeMargin={false} />
+            <QRCodeSVG value={wifiTestLink} size={180} level="H" includeMargin={false} />
             <div style={{ marginTop: 12, textAlign: 'center' }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>Scan QR to Enter</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Use smartphone or tablet camera</div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: '#0f172a' }}>Scan QR to Enter Exam</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>Connects directly over local Wi-Fi</div>
             </div>
           </div>
         </div>

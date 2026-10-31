@@ -45,7 +45,7 @@ YOLO_USE_ONNX = os.environ.get("YOLO_USE_ONNX", "true").lower() in ("true", "1",
 YOLO_NUM_THREADS = int(os.environ.get("YOLO_NUM_THREADS", "4"))
 
 # Backend & Service Integration Config
-BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:5000/api/proctoring")
+BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://127.0.0.1:5000/api/proctoring")
 AI_SERVICE_PORT = int(os.environ.get("AI_SERVICE_PORT", "8000"))
 AI_SERVICE_HOST = os.environ.get("AI_SERVICE_HOST", "0.0.0.0")
 

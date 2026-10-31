@@ -31,6 +31,7 @@ export default function PreTestPanel() {
   const [aiServiceStatus, setAiServiceStatus] = useState('checking');
   const [aiCheckResult, setAiCheckResult] = useState(null);
   const [isVerifyingFace, setIsVerifyingFace] = useState(false);
+  const [cameraErrorNotice, setCameraErrorNotice] = useState(null);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -79,6 +80,7 @@ export default function PreTestPanel() {
 
   const startCamera = async (showAlert = false) => {
     try {
+      setCameraErrorNotice(null);
       if (streamRef.current && streamRef.current.active) {
         setCameraPermission(true);
         if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
@@ -96,12 +98,25 @@ export default function PreTestPanel() {
           videoRef.current.srcObject = stream;
           videoRef.current.play().catch(() => {});
         }
+      } else {
+        const isHttp = typeof window !== 'undefined' && window.location.protocol === 'http:';
+        setCameraPermission(false);
+        setCameraErrorNotice({
+          isHttp,
+          message: isHttp
+            ? 'Webcam access over Wi-Fi requires a secure HTTPS connection. Click below to switch.'
+            : 'Webcam device not found or camera access is not supported by this browser.',
+        });
       }
     } catch (err) {
-      if (showAlert) {
-        alert('Camera access check: ' + err.message);
-      }
       setCameraPermission(false);
+      const isHttp = typeof window !== 'undefined' && window.location.protocol === 'http:';
+      setCameraErrorNotice({
+        isHttp,
+        message: err.name === 'NotAllowedError'
+          ? 'Camera permission was blocked. Please click the lock or camera icon in your address bar and select "Allow".'
+          : `Camera access notice: ${err.message}`,
+      });
     }
   };
 
@@ -135,9 +150,19 @@ export default function PreTestPanel() {
         ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
         liveFrameBase64 = canvas.toDataURL('image/jpeg', 0.9);
       }
+      if (!liveFrameBase64) {
+        setAiCheckResult({
+          success: false,
+          face_detected: false,
+          is_match: false,
+          message: 'Camera stream is still starting. Please wait a moment and click verify again.',
+        });
+        return;
+      }
       const res = await api.aiVerifyPhoto({
         photoUrl: examData.registration.photoUrl,
         liveFrameBase64,
+        cameraIndex: -1,
       });
       setAiCheckResult(res);
     } catch (err) {
@@ -453,6 +478,29 @@ export default function PreTestPanel() {
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   Camera will be continuously monitored by the multimodal AI engine during the exam.
                 </div>
+                {cameraErrorNotice && (
+                  <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 6, background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)', fontSize: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, color: '#eab308', marginBottom: 4 }}>
+                      <AlertCircle size={15} />
+                      <span>Webcam Notice</span>
+                    </div>
+                    <div style={{ color: 'var(--text-secondary)', marginBottom: cameraErrorNotice.isHttp ? 8 : 0, lineHeight: 1.4 }}>
+                      {cameraErrorNotice.message}
+                    </div>
+                    {cameraErrorNotice.isHttp && (
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        style={{ fontSize: 11, padding: '4px 10px', marginTop: 4 }}
+                        onClick={() => {
+                          window.location.href = window.location.href.replace('http:', 'https:');
+                        }}
+                      >
+                        Switch to HTTPS Link (Recommended)
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* AI Proctoring Pre-Flight Check */}

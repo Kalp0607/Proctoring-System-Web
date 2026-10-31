@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api } from '../services/api';
+import { api, getAiBaseUrl } from '../services/api';
 import {
   Clock,
   AlertTriangle,
@@ -30,6 +30,8 @@ import {
   Mic,
   UserCheck,
   UserX,
+  Smartphone,
+  Users,
 } from 'lucide-react';
 
 const DEFAULT_CODE_TEMPLATES = {
@@ -202,6 +204,11 @@ export default function ExamEnvironment() {
   const [aiHudMinimized, setAiHudMinimized] = useState(false);
   const [aiTelemetry, setAiTelemetry] = useState(null);
   const lastAiEventCountRef = useRef(0);
+  const studentIdRef = useRef(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [cameraActive, setCameraActive] = useState(false);
+  const frameStreamingIntervalRef = useRef(null);
 
   // Submit confirmation modal
   const [showSubmitModal, setShowSubmitModal] = useState(false);
@@ -233,6 +240,68 @@ export default function ExamEnvironment() {
     setTimeout(() => {
       setToast((prev) => (prev?.message === message ? null : prev));
     }, 3500);
+  };
+
+  const startLocalWebcam = async (retryCount = 0) => {
+    try {
+      if (streamRef.current && streamRef.current.active) {
+        setCameraActive(true);
+        if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+          videoRef.current.play().catch(() => {});
+        }
+        return;
+      }
+
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 480, height: 360, facingMode: "user" },
+            audio: false,
+          });
+        } catch (innerErr) {
+          if (innerErr.name === 'NotReadableError' && retryCount < 2) {
+            await new Promise((r) => setTimeout(r, 400));
+            return await startLocalWebcam(retryCount + 1);
+          }
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+        setCameraActive(true);
+      } else {
+        console.warn('Webcam API not accessible in this context. If accessing over Wi-Fi, ensure secure context.');
+        setCameraActive(false);
+      }
+    } catch (camErr) {
+      if (camErr.name === 'NotReadableError' && retryCount < 2) {
+        await new Promise((r) => setTimeout(r, 400));
+        return await startLocalWebcam(retryCount + 1);
+      }
+      console.warn("Local webcam access notice:", camErr.message);
+      setCameraActive(false);
+    }
+  };
+
+  const stopLocalWebcam = () => {
+    if (frameStreamingIntervalRef.current) {
+      clearInterval(frameStreamingIntervalRef.current);
+      frameStreamingIntervalRef.current = null;
+    }
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      } catch (_) {}
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
   };
 
   const initExam = async () => {
@@ -296,13 +365,21 @@ export default function ExamEnvironment() {
         (session.proctoring?.tabSwitchCount || 0) + (session.proctoring?.fullscreenExitCount || 0);
       setViolationsCount(totalBrowserViolations);
 
+      // Resolve student identifier accurately
+      const studentIdentifier = String(session.userId || data.registration?.studentId || data.registration?._id);
+      studentIdRef.current = studentIdentifier;
+
+      // Start local webcam capture for this candidate device
+      await startLocalWebcam();
+
       // Connect and initialize Multimodal AI Proctoring Service
       try {
         await api.aiStartSession({
           testId: data.test.testId,
-          studentId: data.registration?._id || session.userId,
-          studentName: data.registration?.formData?.name || 'Candidate',
+          studentId: studentIdentifier,
+          studentName: data.registration?.formData?.name || session.name || 'Candidate',
           photoUrl: data.registration?.photoUrl || '',
+          cameraIndex: -1,
         });
         setAiProctorActive(true);
       } catch (aiErr) {
@@ -350,16 +427,77 @@ export default function ExamEnvironment() {
     return () => clearInterval(interval);
   }, [examData]);
 
-  // AI Proctoring Telemetry Polling & Real-time Alerts Listener
+  // Attach stream to video element when ready
+  useEffect(() => {
+    if (cameraActive && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+      }
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraActive]);
+
+  // Frame streaming loop: Captures webcam frame from canvas and sends to AI engine
+  useEffect(() => {
+    if (!hasLoadedRef.current || autoSubmitting || !cameraActive) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 480;
+    canvas.height = 360;
+    const ctx = canvas.getContext('2d');
+
+    const sendWebcamFrame = async () => {
+      if (!videoRef.current || videoRef.current.videoWidth === 0 || !studentIdRef.current || !examData) return;
+      try {
+        ctx.drawImage(videoRef.current, 0, 0, 480, 360);
+        const frameBase64 = canvas.toDataURL('image/jpeg', 0.65);
+        const res = await api.aiSendFrame({
+          testId: examData.test.testId,
+          studentId: studentIdRef.current,
+          frameBase64,
+        });
+
+        if (res && res.active) {
+          setAiProctorActive(true);
+          if (res.telemetry) setAiTelemetry(res.telemetry);
+          if (res.events && res.events.length > lastAiEventCountRef.current) {
+            const newEvents = res.events.slice(lastAiEventCountRef.current);
+            lastAiEventCountRef.current = res.events.length;
+            const latestEv = newEvents[newEvents.length - 1];
+
+            setViolationsCount((prev) => prev + newEvents.length);
+            const friendlyWarning = formatFriendlyWarning(latestEv);
+            showToast(friendlyWarning, 'warning');
+          }
+        }
+      } catch (fErr) {
+        // Silent frame capture notice
+      }
+    };
+
+    frameStreamingIntervalRef.current = setInterval(sendWebcamFrame, 400);
+    return () => {
+      if (frameStreamingIntervalRef.current) {
+        clearInterval(frameStreamingIntervalRef.current);
+        frameStreamingIntervalRef.current = null;
+      }
+    };
+  }, [hasLoadedRef.current, autoSubmitting, cameraActive, examData]);
+
+  // AI Proctoring Telemetry Polling fallback for status updates
   useEffect(() => {
     if (!hasLoadedRef.current || autoSubmitting) return;
 
     const pollAiStatus = async () => {
+      if (!studentIdRef.current || !examData) return;
       try {
-        const res = await api.aiGetStatus();
+        const res = await api.aiGetStatus({
+          testId: examData.test.testId,
+          studentId: studentIdRef.current,
+        });
         if (res.active) {
           setAiProctorActive(true);
-          setAiTelemetry(res.telemetry);
+          if (res.telemetry) setAiTelemetry(res.telemetry);
 
           if (res.events && res.events.length > lastAiEventCountRef.current) {
             const newEvents = res.events.slice(lastAiEventCountRef.current);
@@ -367,8 +505,6 @@ export default function ExamEnvironment() {
             const latestEv = newEvents[newEvents.length - 1];
 
             setViolationsCount((prev) => prev + newEvents.length);
-
-            // Short, concise React Toast pop-up without technical telemetry/coordinates
             const friendlyWarning = formatFriendlyWarning(latestEv);
             showToast(friendlyWarning, 'warning');
           }
@@ -376,16 +512,19 @@ export default function ExamEnvironment() {
       } catch (_) {}
     };
 
-    const interval = setInterval(pollAiStatus, 2000);
+    const interval = setInterval(pollAiStatus, 2500);
     return () => clearInterval(interval);
-  }, [loading, autoSubmitting]);
+  }, [loading, autoSubmitting, examData]);
 
-  // Clean shutdown of AI Proctoring session on unmount
+  // Clean shutdown of AI Proctoring session and camera on unmount
   useEffect(() => {
     return () => {
-      api.aiStopSession().catch(() => {});
+      stopLocalWebcam();
+      if (examData?.test?.testId && studentIdRef.current) {
+        api.aiStopSession({ testId: examData.test.testId, studentId: studentIdRef.current }).catch(() => {});
+      }
     };
-  }, []);
+  }, [examData]);
 
   // Anti-cheating listeners: tab switch and fullscreen exit
   useEffect(() => {
@@ -419,7 +558,7 @@ export default function ExamEnvironment() {
   }, [loading]);
 
   const handleViolationEvent = async (type, message) => {
-    if (violationLockedRef.current || autoSubmitting) return;
+    if (violationLockedRef.current || autoSubmitting || showWarningModal) return;
     violationLockedRef.current = true;
 
     try {
@@ -436,7 +575,7 @@ export default function ExamEnvironment() {
     } finally {
       setTimeout(() => {
         violationLockedRef.current = false;
-      }, 1500);
+      }, 4000);
     }
   };
 
@@ -445,10 +584,13 @@ export default function ExamEnvironment() {
       if (!document.fullscreenElement) {
         await document.documentElement.requestFullscreen();
       }
-      setShowWarningModal(false);
-    } catch (e) {
-      setShowWarningModal(false);
-    }
+    } catch (e) {}
+    setShowWarningModal(false);
+    // 5-second grace period after dismissing warning modal
+    violationLockedRef.current = true;
+    setTimeout(() => {
+      violationLockedRef.current = false;
+    }, 5000);
   };
 
   // MCQ Selection
@@ -769,8 +911,19 @@ export default function ExamEnvironment() {
 
   // Trigger submission (manual or auto)
   const triggerAutoSubmit = async (reason) => {
+    if (autoSubmitting) return;
     setAutoSubmitting(true);
     setAutoSubmitReason(reason);
+
+    // Guaranteed safety fallback: navigate to submitted screen within 7s even if code runner takes time
+    const fallbackTimer = setTimeout(() => {
+      stopLocalWebcam();
+      api.aiStopSession({ testId, studentId: studentIdRef.current }).catch(() => {});
+      if (document.fullscreenElement) {
+        try { document.exitFullscreen(); } catch (_) {}
+      }
+      navigate(`/exam/submitted/${testId}`, { replace: true });
+    }, 7000);
 
     try {
       const formattedAnswers = Object.entries(answers).map(([questionId, ans]) => ({
@@ -786,15 +939,19 @@ export default function ExamEnvironment() {
         reason,
       });
 
-      await api.aiStopSession().catch(() => {});
+      stopLocalWebcam();
+      api.aiStopSession({ testId, studentId: studentIdRef.current }).catch(() => {});
 
       if (document.fullscreenElement) {
         try { document.exitFullscreen(); } catch (_) {}
       }
 
+      clearTimeout(fallbackTimer);
       navigate(`/exam/submitted/${testId}`, { replace: true });
     } catch (err) {
       console.error('Auto submit error:', err);
+      clearTimeout(fallbackTimer);
+      stopLocalWebcam();
       await api.aiStopSession().catch(() => {});
       navigate(`/exam/submitted/${testId}`, { replace: true });
     }
@@ -816,7 +973,8 @@ export default function ExamEnvironment() {
         reason: 'manual',
       });
 
-      await api.aiStopSession().catch(() => {});
+      stopLocalWebcam();
+      api.aiStopSession({ testId, studentId: studentIdRef.current }).catch(() => {});
 
       if (document.fullscreenElement) {
         try { document.exitFullscreen(); } catch (_) {}
@@ -824,6 +982,12 @@ export default function ExamEnvironment() {
 
       navigate(`/exam/submitted/${testId}`, { replace: true });
     } catch (err) {
+      if (err.data?.alreadySubmitted || (err.message && err.message.toLowerCase().includes('already submitted'))) {
+        stopLocalWebcam();
+        api.aiStopSession({ testId, studentId: studentIdRef.current }).catch(() => {});
+        navigate(`/exam/submitted/${testId}`, { replace: true });
+        return;
+      }
       showToast(err.message || 'Failed to submit exam', 'error');
     } finally {
       setSubmitting(false);
@@ -851,14 +1015,14 @@ export default function ExamEnvironment() {
   if (autoSubmitting) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0f172a', color: '#ffffff', padding: 24, textAlign: 'center' }}>
-        <AlertTriangle size={48} color="var(--danger)" style={{ marginBottom: 16 }} />
+        <div style={{ width: 48, height: 48, border: '4px solid #334155', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 0.8s linear infinite', marginBottom: 20 }} />
         <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
           {autoSubmitReason === 'time_up'
-            ? 'Test Time Expired — Submitting Exam...'
+            ? 'Test Duration Expired — Submitting Exam...'
             : 'Anti-Cheating Violation Limit Exceeded — Submitting Exam...'}
         </h2>
-        <p style={{ color: '#94a3b8', fontSize: 14 }}>
-          Your answers are being securely saved and evaluated.
+        <p style={{ color: '#94a3b8', fontSize: 14, maxWidth: 440, lineHeight: 1.6 }}>
+          Please wait while your answers and code solutions are evaluated and safely recorded...
         </p>
       </div>
     );
@@ -940,6 +1104,26 @@ export default function ExamEnvironment() {
             <span className="badge badge-amber" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <AlertTriangle size={13} />
               {violationsCount} Warning Logged
+            </span>
+          )}
+
+          {/* Real-time Visual Proctoring Indicators */}
+          {aiTelemetry?.phone_detected && (
+            <span className="badge badge-red" style={{ display: 'flex', alignItems: 'center', gap: 5, animation: 'pulse 1s infinite' }}>
+              <Smartphone size={13} />
+              Phone Detected!
+            </span>
+          )}
+          {aiTelemetry?.multiple_people && (
+            <span className="badge badge-red" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Users size={13} />
+              Multiple People
+            </span>
+          )}
+          {aiTelemetry?.looking_away && (
+            <span className="badge badge-amber" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <EyeOff size={13} />
+              Looking Away
             </span>
           )}
 
@@ -1969,10 +2153,47 @@ export default function ExamEnvironment() {
                   marginBottom: 10,
                 }}
               >
-                {aiProctorActive && !aiFeedError ? (
+                {cameraActive ? (
+                  <>
+                    <video
+                      ref={(el) => {
+                        videoRef.current = el;
+                        if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                          el.srcObject = streamRef.current;
+                          el.play().catch(() => {});
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)', display: 'block' }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 6,
+                        left: 6,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        padding: '2px 6px',
+                        background: 'rgba(9, 13, 22, 0.8)',
+                        backdropFilter: 'blur(4px)',
+                        borderRadius: 4,
+                        border: '1px solid rgba(16, 185, 129, 0.4)',
+                        fontSize: 10,
+                        color: '#10b981',
+                        fontWeight: 600,
+                      }}
+                    >
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
+                      <span>LIVE PROCTORING</span>
+                    </div>
+                  </>
+                ) : aiProctorActive && !aiFeedError ? (
                   <img
                     key={aiFeedRetry}
-                    src={`http://localhost:8000/api/ai/video-feed?retry=${aiFeedRetry}`}
+                    src={`${getAiBaseUrl()}/video-feed?testId=${testId}&studentId=${studentIdRef.current || ''}&retry=${aiFeedRetry}`}
                     alt="AI Monitor"
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                     onLoad={() => setAiFeedError(false)}
@@ -2011,27 +2232,47 @@ export default function ExamEnvironment() {
                       }}
                     />
                     <span>{aiFeedError ? 'Connecting camera feed...' : 'AI Camera Standby / Initializing'}</span>
-                    {aiFeedError && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAiFeedError(false);
-                          setAiFeedRetry((r) => r + 1);
-                        }}
-                        style={{
-                          marginTop: 4,
-                          padding: '2px 8px',
-                          borderRadius: 4,
-                          background: 'rgba(59, 130, 246, 0.2)',
-                          border: '1px solid rgba(59, 130, 246, 0.5)',
-                          color: '#38bdf8',
-                          fontSize: 10,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Reconnect Stream
-                      </button>
-                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      {typeof window !== 'undefined' && window.location.protocol === 'http:' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.location.href = window.location.href.replace('http:', 'https:');
+                          }}
+                          style={{
+                            padding: '3px 8px',
+                            borderRadius: 4,
+                            background: 'rgba(59, 130, 246, 0.2)',
+                            border: '1px solid rgba(59, 130, 246, 0.5)',
+                            color: '#38bdf8',
+                            fontSize: 10,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Switch to HTTPS
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAiFeedError(false);
+                            setAiFeedRetry((r) => r + 1);
+                            startLocalWebcam();
+                          }}
+                          style={{
+                            padding: '3px 8px',
+                            borderRadius: 4,
+                            background: 'rgba(59, 130, 246, 0.2)',
+                            border: '1px solid rgba(59, 130, 246, 0.5)',
+                            color: '#38bdf8',
+                            fontSize: 10,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Retry Camera
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
                 {/* Live Gaze tag */}
@@ -2039,7 +2280,7 @@ export default function ExamEnvironment() {
                   style={{
                     position: 'absolute',
                     top: 6,
-                    left: 6,
+                    right: 6,
                     padding: '2px 6px',
                     borderRadius: 4,
                     background: 'rgba(0,0,0,0.6)',

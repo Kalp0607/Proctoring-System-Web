@@ -61,8 +61,12 @@ class ViolationManager:
 
     def __init__(self, logger_instance: Optional[ViolationLogger] = None,
                  on_violation_start: Optional[Callable] = None,
-                 on_violation_close: Optional[Callable] = None):
-        self.logger = logger_instance or ViolationLogger()
+                 on_violation_close: Optional[Callable] = None,
+                 test_id: Optional[str] = None,
+                 student_id: Optional[str] = None):
+        self.test_id = test_id
+        self.student_id = student_id
+        self.logger = logger_instance or ViolationLogger(test_id=test_id, student_id=student_id)
         self.on_violation_start = on_violation_start
         self.on_violation_close = on_violation_close
 
@@ -236,7 +240,12 @@ class ViolationManager:
         relative_screenshot_path = None
 
         if allow_screenshot:
-            screenshot_filename = f"{file_timestamp}_{vtype}.jpg"
+            prefix = ""
+            if self.test_id or self.student_id:
+                clean_test = (self.test_id or "test").replace("/", "_").replace("\\", "_")
+                clean_stu = str(self.student_id or "student").replace("/", "_").replace("\\", "_")
+                prefix = f"{clean_test}_{clean_stu}_"
+            screenshot_filename = f"{prefix}{file_timestamp}_{vtype}.jpg"
             screenshot_full_path = config.SCREENSHOTS_DIR / screenshot_filename
             relative_screenshot_path = f"violations/screenshots/{screenshot_filename}"
 
@@ -248,7 +257,7 @@ class ViolationManager:
                 cv2.rectangle(evidence_frame, (0, 0), (ew, 45), (30, 30, 46), -1)
                 cv2.rectangle(evidence_frame, (0, 0), (ew, 45), (65, 65, 230), 2)
                 
-                banner_txt = f"PROCTORING VIOLATION: {vtype} | Time: {timestamp_str}"
+                banner_txt = f"PROCTORING VIOLATION: {vtype} | Candidate: {self.student_id or 'Student'} | Time: {timestamp_str}"
                 cv2.putText(evidence_frame, banner_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
                 if result.message:

@@ -74,7 +74,7 @@ async function executeCode({ sourceCode, language = 'javascript', stdin = '', ex
   return executeLocally({ sourceCode, language: normalizedLang, stdin, expectedOutput });
 }
 
-function executeLocally({ sourceCode, language, stdin = '', expectedOutput = '' }) {
+function executeLocally({ sourceCode, language, stdin = '', expectedOutput = '', timeoutMs = 2500 }) {
   return new Promise((resolve) => {
     const tmpDir = os.tmpdir();
     const timestamp = Date.now() + '_' + Math.random().toString(36).substring(7);
@@ -100,7 +100,7 @@ function executeLocally({ sourceCode, language, stdin = '', expectedOutput = '' 
       fs.writeFileSync(scriptPath, sourceCode, 'utf-8');
 
       const startT = Date.now();
-      const child = exec(`node "${scriptPath}"`, { timeout: 4000, maxBuffer: 1024 * 512 }, (err, stdout, stderr) => {
+      const child = exec(`node "${scriptPath}"`, { timeout: timeoutMs, maxBuffer: 1024 * 512 }, (err, stdout, stderr) => {
         const elapsed = ((Date.now() - startT) / 1000).toFixed(2) + 's';
         try { fs.unlinkSync(scriptPath); } catch (_) {}
         finish(err, stdout, stderr, elapsed);
@@ -115,7 +115,7 @@ function executeLocally({ sourceCode, language, stdin = '', expectedOutput = '' 
       fs.writeFileSync(scriptPath, sourceCode, 'utf-8');
 
       const startT = Date.now();
-      const child = exec(`python "${scriptPath}"`, { timeout: 5000, maxBuffer: 1024 * 512 }, (err, stdout, stderr) => {
+      const child = exec(`python "${scriptPath}"`, { timeout: timeoutMs, maxBuffer: 1024 * 512 }, (err, stdout, stderr) => {
         const elapsed = ((Date.now() - startT) / 1000).toFixed(2) + 's';
         try { fs.unlinkSync(scriptPath); } catch (_) {}
         finish(err, stdout, stderr, elapsed);

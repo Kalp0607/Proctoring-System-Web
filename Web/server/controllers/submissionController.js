@@ -39,6 +39,8 @@ exports.startExam = async (req, res) => {
 
     res.json({
       submissionId: submission._id,
+      userId: req.user._id,
+      studentId: req.user._id,
       startedAt: submission.startedAt,
       status: submission.status,
       answers: submission.answers,
@@ -348,36 +350,35 @@ exports.submitExam = async (req, res) => {
             qAns.marksAwarded = Number(q.marks);
             totalMarks += Number(q.marks);
           } else {
-            let passedCount = 0;
-            const details = [];
-
-            for (let i = 0; i < testCases.length; i++) {
-              const tc = testCases[i];
+            const casePromises = testCases.map(async (tc, i) => {
               try {
                 const execRes = await executeCode({
                   sourceCode: qAns.code,
                   language: qAns.language || q.language || 'javascript',
                   stdin: tc.input || '',
-                  expectedOutput: tc.expectedOutput || '',
+                  expectedOutput: tc.expectedOutput || tc.output || '',
+                  timeoutMs: 2000,
                 });
 
-                if (execRes.passed) passedCount++;
-                details.push({
+                return {
                   testCaseIndex: i + 1,
                   passed: execRes.passed,
                   input: tc.isHidden ? '[Hidden Test Case]' : tc.input,
                   expectedOutput: tc.isHidden ? '[Hidden]' : tc.expectedOutput,
                   actualOutput: tc.isHidden ? (execRes.passed ? '[Passed]' : '[Failed]') : execRes.stdout,
                   error: execRes.stderr,
-                });
+                };
               } catch (e) {
-                details.push({
+                return {
                   testCaseIndex: i + 1,
                   passed: false,
                   error: e.message,
-                });
+                };
               }
-            }
+            });
+
+            const details = await Promise.all(casePromises);
+            const passedCount = details.filter((d) => d.passed).length;
 
             const ratio = passedCount / testCases.length;
             const marks = Math.round(ratio * Number(q.marks) * 10) / 10;
@@ -408,7 +409,12 @@ exports.submitExam = async (req, res) => {
       (submission.proctoring?.tabSwitchCount || 0) +
       (submission.proctoring?.fullscreenExitCount || 0);
 
-    if (totalViolations >= 3) {
+    const highRiskTypes = ['PHONE_DETECTED', 'MULTIPLE_PEOPLE', 'IDENTITY_MISMATCH', 'FACE_MISMATCH', 'MULTIPLE_SPEAKERS'];
+    const hasCriticalViolation = (submission.proctoring?.violations || []).some(
+      (v) => v.severity === 'critical' || highRiskTypes.includes(v.type)
+    );
+
+    if (submission.proctoring?.riskLevel === 'High' || hasCriticalViolation || totalViolations >= 3) {
       submission.proctoring.riskLevel = 'High';
     } else if (totalViolations >= 1) {
       submission.proctoring.riskLevel = 'Medium';

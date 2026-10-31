@@ -419,6 +419,7 @@ exports.getTestForExam = async (req, res) => {
       },
       registration: {
         _id: registration._id,
+        studentId: req.user._id,
         photoUrl: registration.photoUrl,
         formData: registration.formData,
       },
